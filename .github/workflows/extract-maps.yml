@@ -22,7 +22,7 @@ jobs:
           curl -L -o pmtiles.tar.gz "$ASSET_URL"
           tar -xzf pmtiles.tar.gz
           chmod +x pmtiles
-          ./pmtiles --version
+          ./pmtiles
 
       - name: Ensure release exists
         run: gh release view maps >/dev/null 2>&1 || gh release create maps --title "Offline map tiles" --notes "pmtiles regions"
