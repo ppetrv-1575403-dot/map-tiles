@@ -31,7 +31,25 @@ jobs:
 
       - name: Extract regions and upload
         run: |
-          PLANET="https://build.protomaps.com/20240919.pmtiles"
+          # Ищем актуальную сборку, перебирая последние 14 дней
+          PLANET=""
+          for i in $(seq 1 14); do
+            DATE=$(date -d "$i days ago" +%Y%m%d)
+            URL="https://build.protomaps.com/${DATE}.pmtiles"
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" -I "$URL")
+            if [ "$STATUS" = "200" ]; then
+              PLANET="$URL"
+              echo "Found planet build: $PLANET"
+              break
+            fi
+            echo "Date $DATE -> HTTP $STATUS, trying next..."
+          done
+
+          if [ -z "$PLANET" ]; then
+            echo "::error::No planet build found in the last 14 days"
+            exit 1
+          fi
+
           regions=(
             "minsk_region|26.30,52.80,29.20,55.00|13"
             "gomel_region|27.50,51.20,32.80,53.10|13"
