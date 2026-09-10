@@ -1,0 +1,51 @@
+name: Extract PMTiles regions
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download pmtiles CLI
+        run: |
+          ASSET_URL=$(curl -s https://api.github.com/repos/protomaps/go-pmtiles/releases/latest \
+            | grep "browser_download_url" | grep "Linux_x86_64.tar.gz" \
+            | head -1 | sed 's/.*"browser_download_url": "\(.*\)".*/\1/')
+          echo "Downloading from: $ASSET_URL"
+          curl -L -o pmtiles.tar.gz "$ASSET_URL"
+          tar -xzf pmtiles.tar.gz
+          chmod +x pmtiles
+          ./pmtiles --version
+
+      - name: Ensure release exists
+        run: gh release view maps >/dev/null 2>&1 || gh release create maps --title "Offline map tiles" --notes "pmtiles regions"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Extract regions and upload
+        run: |
+          PLANET="https://build.protomaps.com/20240919.pmtiles"
+          regions=(
+            "minsk_region|26.30,52.80,29.20,55.00|13"
+            "gomel_region|27.50,51.20,32.80,53.10|13"
+            "moscow_region|35.10,54.20,40.20,56.90|12"
+            "leningrad_region|27.70,58.40,35.70,61.40|12"
+            "spb|29.90,59.70,30.60,60.10|15"
+          )
+          for r in "${regions[@]}"; do
+            IFS='|' read -r name bbox zoom <<< "$r"
+            echo "::group::Extracting $name"
+            ./pmtiles extract "$PLANET" "$name.pmtiles" --bbox="$bbox" --maxzoom="$zoom" --download-threads=8
+            gh release upload maps "$name.pmtiles" --clobber
+            rm -f "$name.pmtiles"
+            echo "::endgroup::"
+          done
+        env:
+          GH_TOKEN: ${{ github.token }}
