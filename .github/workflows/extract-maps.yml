@@ -1,4 +1,4 @@
-name: Extract PMTiles regions
+name: Extract MBTiles regions
 
 on:
   workflow_dispatch:
@@ -13,25 +13,32 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install tippecanoe
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libsqlite3-dev zlib1g-dev
+          git clone https://github.com/felt/tippecanoe.git
+          cd tippecanoe
+          make -j$(nproc)
+          sudo make install
+          tilejoin --version
+
       - name: Download pmtiles CLI
         run: |
           ASSET_URL=$(curl -s https://api.github.com/repos/protomaps/go-pmtiles/releases/latest \
             | grep "browser_download_url" | grep "Linux_x86_64.tar.gz" \
             | head -1 | sed 's/.*"browser_download_url": "\(.*\)".*/\1/')
-          echo "Downloading from: $ASSET_URL"
           curl -L -o pmtiles.tar.gz "$ASSET_URL"
           tar -xzf pmtiles.tar.gz
           chmod +x pmtiles
-          ./pmtiles
 
       - name: Ensure release exists
-        run: gh release view maps >/dev/null 2>&1 || gh release create maps --title "Offline map tiles" --notes "pmtiles regions"
+        run: gh release view maps >/dev/null 2>&1 || gh release create maps --title "Offline MBTiles" --notes "mbtiles regions"
         env:
           GH_TOKEN: ${{ github.token }}
 
-      - name: Extract regions and upload
+      - name: Find planet build
         run: |
-          # Ищем актуальную сборку, перебирая последние 14 дней
           PLANET=""
           for i in $(seq 1 14); do
             DATE=$(date -d "$i days ago" +%Y%m%d)
@@ -42,14 +49,15 @@ jobs:
               echo "Found planet build: $PLANET"
               break
             fi
-            echo "Date $DATE -> HTTP $STATUS, trying next..."
           done
-
           if [ -z "$PLANET" ]; then
-            echo "::error::No planet build found in the last 14 days"
+            echo "No planet build found"
             exit 1
           fi
+          echo "PLANET=$PLANET" >> $GITHUB_ENV
 
+      - name: Extract and convert regions
+        run: |
           regions=(
             "minsk_region|26.30,52.80,29.20,55.00|13"
             "gomel_region|27.50,51.20,32.80,53.10|13"
@@ -60,9 +68,17 @@ jobs:
           for r in "${regions[@]}"; do
             IFS='|' read -r name bbox zoom <<< "$r"
             echo "::group::Extracting $name"
-            ./pmtiles extract "$PLANET" "$name.pmtiles" --bbox="$bbox" --maxzoom="$zoom" --download-threads=8
-            gh release upload maps "$name.pmtiles" --clobber
-            rm -f "$name.pmtiles"
+            
+            # Вырезаем регион из планеты
+            ./pmtiles extract "$PLANET" "${name}.pmtiles" --bbox="$bbox" --maxzoom="$zoom" --download-threads=8
+            
+            # Конвертируем в MBTiles
+            tilejoin -o "${name}.mbtiles" "${name}.pmtiles" --no-tile-compression
+            
+            # Загружаем MBTiles в релиз
+            gh release upload maps "${name}.mbtiles" --clobber
+            
+            rm -f "${name}.pmtiles" "${name}.mbtiles"
             echo "::endgroup::"
           done
         env:
