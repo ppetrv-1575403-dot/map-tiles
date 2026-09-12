@@ -20,14 +20,20 @@ jobs:
           git clone --depth 1 https://github.com/felt/tippecanoe.git
           cd tippecanoe
           make -j$(nproc)
-          sudo make install
+          # Проверяем, что собралось
+          echo "=== Содержимое каталога ==="
+          ls -la
+          echo "=== Проверяем бинарники ==="
+          ls -la tippecanoe tilejoin 2>&1 || true
           cd ..
-          # Добавляем в PATH и проверяем
-          echo "/usr/local/bin" >> $GITHUB_PATH
+          # Копируем в /usr/local/bin вручную
+          sudo cp tippecanoe/tippecanoe /usr/local/bin/
+          sudo cp tippecanoe/tilejoin /usr/local/bin/
+          sudo chmod +x /usr/local/bin/tippecanoe /usr/local/bin/tilejoin
+          echo "=== Проверка после копирования ==="
           ls -la /usr/local/bin/ | grep -E "tippecanoe|tilejoin"
-          which tilejoin || echo "tilejoin not in PATH"
           /usr/local/bin/tilejoin --version
-
+      
       - name: Download pmtiles CLI
         run: |
           ASSET_URL=$(curl -s https://api.github.com/repos/protomaps/go-pmtiles/releases/latest \
