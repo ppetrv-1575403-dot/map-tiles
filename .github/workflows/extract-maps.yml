@@ -20,19 +20,13 @@ jobs:
           git clone --depth 1 https://github.com/felt/tippecanoe.git
           cd tippecanoe
           make -j$(nproc)
-          # Проверяем, что собралось
-          echo "=== Содержимое каталога ==="
-          ls -la
-          echo "=== Проверяем бинарники ==="
-          ls -la tippecanoe tilejoin 2>&1 || true
           cd ..
-          # Копируем в /usr/local/bin вручную
+          # Копируем бинарники (обрати внимание: tile-join, а не tilejoin)
           sudo cp tippecanoe/tippecanoe /usr/local/bin/
-          sudo cp tippecanoe/tilejoin /usr/local/bin/
-          sudo chmod +x /usr/local/bin/tippecanoe /usr/local/bin/tilejoin
-          echo "=== Проверка после копирования ==="
-          ls -la /usr/local/bin/ | grep -E "tippecanoe|tilejoin"
-          /usr/local/bin/tilejoin --version
+          sudo cp tippecanoe/tile-join /usr/local/bin/
+          sudo chmod +x /usr/local/bin/tippecanoe /usr/local/bin/tile-join
+          # Проверяем
+          /usr/local/bin/tile-join --version || /usr/local/bin/tile-join --help | head -3
       
       - name: Download pmtiles CLI
         run: |
@@ -69,7 +63,7 @@ jobs:
       
       - name: Extract and convert regions
         run: |
-          TILEJOIN=/usr/local/bin/tilejoin
+          TILEJOIN=/usr/local/bin/tile-join
           regions=(
             "minsk_region|26.30,52.80,29.20,55.00|13"
             "gomel_region|27.50,51.20,32.80,53.10|13"
