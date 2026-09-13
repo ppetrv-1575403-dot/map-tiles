@@ -116,7 +116,7 @@ jobs:
           which osmium || echo "osmium not found in PATH"
           osmium --version || echo "osmium version check failed"
           ls -la /usr/bin/ | grep -i osmium || echo "not in /usr/bin"
-          
+
       - name: Generate road graphs
         run: |
           # Проверяем наличие файла
@@ -158,6 +158,7 @@ jobs:
             printf 'graphhopper:\n' > "${name}_config.yml"
             printf '  datareader.file: %s.osm.pbf\n' "$name" >> "${name}_config.yml"
             printf '  graph.location: %s.gh\n' "$name" >> "${name}_config.yml"
+            printf '  import.osm.ignored_highways: []\n' >> "${name}_config.yml"
             printf '  profiles:\n' >> "${name}_config.yml"
             printf '    - name: car\n' >> "${name}_config.yml"
             printf '      vehicle: car\n' >> "${name}_config.yml"
