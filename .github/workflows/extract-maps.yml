@@ -84,25 +84,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
-      - name: Install GraphHopper
-        run: |
-          # Скачиваем GraphHopper CLI
-          curl -L -o graphhopper-web.jar "https://repo1.maven.org/maven2/com/graphhopper/graphhopper-web/8.0/graphhopper-web-8.0.jar"
-          curl -L -o graphhopper-reader.jar "https://repo1.maven.org/maven2/com/graphhopper/graphhopper-core/8.0/graphhopper-core-8.0.jar"
-          # Проверяем
-          java -version
-
-      - name: Install osmium
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y osmium-tool
-
       - name: Generate road graphs
         run: |
           # Скачиваем данные Беларуси из Geofabrik
           curl -L -o belarus.osm.pbf "https://download.geofabrik.de/europe/belarus-latest.osm.pbf"
           
-          # Вырезаем регионы по bounding box и генерируем графы
           regions=(
             "gomel_region|27.50,51.20,32.80,53.10"
             "minsk_region|26.30,52.80,29.20,55.00"
@@ -115,12 +101,21 @@ jobs:
             # Вырезаем регион
             osmium extract belarus.osm.pbf -b "$bbox" -o "${name}.osm.pbf" --overwrite
             
+            # Создаём конфигурационный файл для GraphHopper
+            cat > "${name}_config.yml" <<EOF
+          graphhopper:
+            datareader.file: ${name}.osm.pbf
+            graph.location: ${name}.gh
+            graph.vehicles: car,foot
+            profiles:
+              - name: car
+                vehicle: car
+              - name: foot
+                vehicle: foot
+          EOF
+            
             # Генерируем граф дорог
-            java -cp graphhopper-web.jar:graphhopper-reader.jar \
-              com.graphhopper.application.GraphHopperApplication import \
-              --input "${name}.osm.pbf" \
-              --graph.location "${name}.gh" \
-              --vehicles car,foot
+            java -jar graphhopper-web.jar import "${name}_config.yml"
             
             # Упаковываем в zip
             zip -r "${name}_graph.zip" "${name}.gh"
@@ -128,7 +123,7 @@ jobs:
             # Загружаем в релиз
             gh release upload maps "${name}_graph.zip" --clobber
             
-            rm -rf "${name}.gh" "${name}_graph.zip" "${name}.osm.pbf"
+            rm -rf "${name}.gh" "${name}_graph.zip" "${name}.osm.pbf" "${name}_config.yml"
             echo "::endgroup::"
           done
         env:
