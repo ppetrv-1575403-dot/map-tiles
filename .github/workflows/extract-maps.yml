@@ -116,7 +116,7 @@ jobs:
           which osmium || echo "osmium not found in PATH"
           osmium --version || echo "osmium version check failed"
           ls -la /usr/bin/ | grep -i osmium || echo "not in /usr/bin"
-
+          
       - name: Generate road graphs
         run: |
           # Проверяем наличие файла
@@ -143,17 +143,18 @@ jobs:
             
             # Создаём конфигурационный файл
             cat > "${name}_config.yml" <<EOF
-          graphhopper:
-            datareader.file: ${name}.osm.pbf
-            graph.location: ${name}.gh
-            graph.vehicles: car,foot
-            profiles:
-              - name: car
-                vehicle: car
-              - name: foot
-                vehicle: foot
-          EOF
-            
+graphhopper:
+  datareader.file: ${name}.osm.pbf
+  graph.location: ${name}.gh
+  graph.vehicles: car,foot
+  profiles:
+    - name: car
+      vehicle: car
+      custom_model_files: []
+    - name: foot
+      vehicle: foot
+      custom_model_files: []
+EOF
             # Генерируем граф дорог
             java -jar graphhopper-web.jar import "${name}_config.yml"
             
@@ -168,3 +169,5 @@ jobs:
           done
         env:
           GH_TOKEN: ${{ github.token }}
+
+
