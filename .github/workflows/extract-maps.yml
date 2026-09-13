@@ -84,6 +84,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
+      - name: Install osmium
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y osmium-tool
+          # Проверяем установку
+          which osmium || echo "osmium not found in PATH"
+          osmium --version || echo "osmium version check failed"
+          ls -la /usr/bin/ | grep -i osmium || echo "not in /usr/bin"
+
       - name: Generate road graphs
         run: |
           # Скачиваем данные Беларуси из Geofabrik
@@ -98,8 +107,19 @@ jobs:
             IFS='|' read -r name bbox <<< "$r"
             echo "::group::Generating graph for $name"
             
-            # Вырезаем регион
-            osmium extract belarus.osm.pbf -b "$bbox" -o "${name}.osm.pbf" --overwrite
+            # Вырезаем регион (пробуем разные инструменты)
+            if command -v osmium &> /dev/null; then
+              osmium extract belarus.osm.pbf -b "$bbox" -o "${name}.osm.pbf" --overwrite
+            elif command -v /usr/bin/osmium &> /dev/null; then
+              /usr/bin/osmium extract belarus.osm.pbf -b "$bbox" -o "${name}.osm.pbf" --overwrite
+            else
+              echo "osmium not found, trying alternative..."
+              # Альтернатива: используем osmosis
+              sudo apt-get install -y osmosis
+              osmosis --read-pbf belarus.osm.pbf \
+                --bounding-box left=${bbox%%,*} \
+                --write-pbf "${name}.osm.pbf"
+            fi
             
             # Создаём конфигурационный файл для GraphHopper
             cat > "${name}_config.yml" <<EOF
