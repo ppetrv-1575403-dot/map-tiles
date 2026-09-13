@@ -152,10 +152,11 @@ jobs:
             # Вырезаем регион
             osmium extract belarus.osm.pbf -b "$bbox" -o "${name}.osm.pbf" --overwrite
             
-            # Создаём конфигурационный файл для GraphHopper 7.0 (упрощённый формат)
+            # Создаём конфигурационный файл для GraphHopper 7.0
             printf 'graphhopper:\n' > "${name}_config.yml"
             printf '  datareader.file: %s.osm.pbf\n' "$name" >> "${name}_config.yml"
             printf '  graph.location: %s.gh\n' "$name" >> "${name}_config.yml"
+            printf '  import.osm.ignored_highways: []\n' >> "${name}_config.yml"
             printf '  graph.vehicles: car,foot\n' >> "${name}_config.yml"
             printf '  profiles:\n' >> "${name}_config.yml"
             printf '    - name: car\n' >> "${name}_config.yml"
