@@ -126,8 +126,21 @@ jobs:
             exit 1
           fi
           
-          # Скачиваем данные Беларуси из Geofabrik
-          curl -L -o belarus.osm.pbf "https://download.geofabrik.de/europe/belarus-latest.osm.pbf"
+          # Скачиваем данные Беларуси из Geofabrik с таймаутом
+          echo "=== Начинаем скачивание данных Беларуси ==="
+          curl -L --connect-timeout 30 --max-time 600 \
+            --progress-bar \
+            -o belarus.osm.pbf \
+            "https://download.geofabrik.de/europe/belarus-latest.osm.pbf"
+          
+          # Проверяем размер скачанного файла
+          FILE_SIZE=$(stat -c%s belarus.osm.pbf 2>/dev/null || echo "0")
+          echo "=== Скачано: $FILE_SIZE байт ==="
+          
+          if [ "$FILE_SIZE" -lt 1000000 ]; then
+            echo "ERROR: Файл слишком мал или не скачался"
+            exit 1
+          fi
           
           regions=(
             "gomel_region|27.50,51.20,32.80,53.10"
@@ -141,7 +154,7 @@ jobs:
             # Вырезаем регион
             osmium extract belarus.osm.pbf -b "$bbox" -o "${name}.osm.pbf" --overwrite
             
-            # Создаём конфигурационный файл через printf (надёжнее чем heredoc)
+            # Создаём конфигурационный файл через printf
             printf 'graphhopper:\n' > "${name}_config.yml"
             printf '  datareader.file: %s.osm.pbf\n' "$name" >> "${name}_config.yml"
             printf '  graph.location: %s.gh\n' "$name" >> "${name}_config.yml"
