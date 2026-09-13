@@ -84,6 +84,30 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
+      - name: Install GraphHopper
+        run: |
+          # Скачиваем основной файл
+          curl -L -o graphhopper-web.jar \
+            "https://repo1.maven.org/maven2/com/graphhopper/graphhopper-web/8.0/graphhopper-web-8.0.jar"
+          
+          # Проверяем, что файл скачался
+          echo "=== Проверка файлов ==="
+          ls -la *.jar || echo "No jar files found"
+          ls -la graphhopper-web.jar || echo "graphhopper-web.jar not found"
+          
+          # Проверяем размер (должен быть несколько мегабайт)
+          FILE_SIZE=$(stat -c%s graphhopper-web.jar 2>/dev/null || echo "0")
+          echo "File size: $FILE_SIZE bytes"
+          
+          if [ "$FILE_SIZE" -lt 1000 ]; then
+            echo "File too small, trying alternative URL..."
+            curl -L -o graphhopper-web.jar \
+              "https://github.com/graphhopper/graphhopper/releases/download/8.0/graphhopper-web-8.0.jar"
+          fi
+          
+          # Проверяем, что файл валидный
+          java -jar graphhopper-web.jar --version 2>&1 || echo "Warning: version check failed"
+     
       - name: Install osmium
         run: |
           sudo apt-get update
@@ -95,6 +119,13 @@ jobs:
 
       - name: Generate road graphs
         run: |
+          # Проверяем наличие файла
+          if [ ! -f graphhopper-web.jar ]; then
+            echo "ERROR: graphhopper-web.jar not found!"
+            ls -la
+            exit 1
+          fi
+          
           # Скачиваем данные Беларуси из Geofabrik
           curl -L -o belarus.osm.pbf "https://download.geofabrik.de/europe/belarus-latest.osm.pbf"
           
@@ -107,21 +138,10 @@ jobs:
             IFS='|' read -r name bbox <<< "$r"
             echo "::group::Generating graph for $name"
             
-            # Вырезаем регион (пробуем разные инструменты)
-            if command -v osmium &> /dev/null; then
-              osmium extract belarus.osm.pbf -b "$bbox" -o "${name}.osm.pbf" --overwrite
-            elif command -v /usr/bin/osmium &> /dev/null; then
-              /usr/bin/osmium extract belarus.osm.pbf -b "$bbox" -o "${name}.osm.pbf" --overwrite
-            else
-              echo "osmium not found, trying alternative..."
-              # Альтернатива: используем osmosis
-              sudo apt-get install -y osmosis
-              osmosis --read-pbf belarus.osm.pbf \
-                --bounding-box left=${bbox%%,*} \
-                --write-pbf "${name}.osm.pbf"
-            fi
+            # Вырезаем регион
+            osmium extract belarus.osm.pbf -b "$bbox" -o "${name}.osm.pbf" --overwrite
             
-            # Создаём конфигурационный файл для GraphHopper
+            # Создаём конфигурационный файл
             cat > "${name}_config.yml" <<EOF
           graphhopper:
             datareader.file: ${name}.osm.pbf
