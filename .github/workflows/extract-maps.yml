@@ -1,4 +1,4 @@
-name: Extract MBTiles regions
+name: Extract MBTiles regions and road graphs
 
 on:
   workflow_dispatch:
@@ -25,9 +25,8 @@ jobs:
           sudo cp tippecanoe/tippecanoe /usr/local/bin/
           sudo cp tippecanoe/tile-join /usr/local/bin/
           sudo chmod +x /usr/local/bin/tippecanoe /usr/local/bin/tile-join
-          # Проверяем
           /usr/local/bin/tile-join --version || /usr/local/bin/tile-join --help | head -3
-      
+
       - name: Download pmtiles CLI
         run: |
           ASSET_URL=$(curl -s https://api.github.com/repos/protomaps/go-pmtiles/releases/latest \
@@ -60,13 +59,16 @@ jobs:
             exit 1
           fi
           echo "PLANET=$PLANET" >> $GITHUB_ENV
-      
+
       - name: Extract and convert regions
         run: |
           TILEJOIN=/usr/local/bin/tile-join
           regions=(
-            "minsk_region|26.30,52.80,29.20,55.00|17"
-            "gomel_region|27.50,51.20,32.80,53.10|17"
+            "minsk_region|26.30,52.80,29.20,55.00|13"
+            "gomel_region|27.50,51.20,32.80,53.10|13"
+            "moscow_region|35.10,54.20,40.20,56.90|12"
+            "leningrad_region|27.70,58.40,35.70,61.40|12"
+            "spb|29.90,59.70,30.60,60.10|15"
           )
           for r in "${regions[@]}"; do
             IFS='|' read -r name bbox zoom <<< "$r"
@@ -84,35 +86,32 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
-      - name: Install GraphHopper
+      - name: Install GraphHopper 7.0
         run: |
-          # Скачиваем основной файл
+          # Скачиваем основной файл версии 7.0
           curl -L -o graphhopper-web.jar \
-            "https://repo1.maven.org/maven2/com/graphhopper/graphhopper-web/8.0/graphhopper-web-8.0.jar"
+            "https://repo1.maven.org/maven2/com/graphhopper/graphhopper-web/7.0/graphhopper-web-7.0.jar"
           
           # Проверяем, что файл скачался
           echo "=== Проверка файлов ==="
           ls -la *.jar || echo "No jar files found"
           ls -la graphhopper-web.jar || echo "graphhopper-web.jar not found"
           
-          # Проверяем размер (должен быть несколько мегабайт)
           FILE_SIZE=$(stat -c%s graphhopper-web.jar 2>/dev/null || echo "0")
           echo "File size: $FILE_SIZE bytes"
           
           if [ "$FILE_SIZE" -lt 1000 ]; then
             echo "File too small, trying alternative URL..."
             curl -L -o graphhopper-web.jar \
-              "https://github.com/graphhopper/graphhopper/releases/download/8.0/graphhopper-web-8.0.jar"
+              "https://github.com/graphhopper/graphhopper/releases/download/7.0/graphhopper-web-7.0.jar"
           fi
           
-          # Проверяем, что файл валидный
-          java -jar graphhopper-web.jar --version 2>&1 || echo "Warning: version check failed"
-     
+          java -version
+
       - name: Install osmium
         run: |
           sudo apt-get update
           sudo apt-get install -y osmium-tool
-          # Проверяем установку
           which osmium || echo "osmium not found in PATH"
           osmium --version || echo "osmium version check failed"
           ls -la /usr/bin/ | grep -i osmium || echo "not in /usr/bin"
@@ -133,7 +132,6 @@ jobs:
             -o belarus.osm.pbf \
             "https://download.geofabrik.de/europe/belarus-latest.osm.pbf"
           
-          # Проверяем размер скачанного файла
           FILE_SIZE=$(stat -c%s belarus.osm.pbf 2>/dev/null || echo "0")
           echo "=== Скачано: $FILE_SIZE байт ==="
           
@@ -154,18 +152,16 @@ jobs:
             # Вырезаем регион
             osmium extract belarus.osm.pbf -b "$bbox" -o "${name}.osm.pbf" --overwrite
             
-            # Создаём конфигурационный файл через printf
+            # Создаём конфигурационный файл для GraphHopper 7.0 (упрощённый формат)
             printf 'graphhopper:\n' > "${name}_config.yml"
             printf '  datareader.file: %s.osm.pbf\n' "$name" >> "${name}_config.yml"
             printf '  graph.location: %s.gh\n' "$name" >> "${name}_config.yml"
-            printf '  import.osm.ignored_highways: []\n' >> "${name}_config.yml"
+            printf '  graph.vehicles: car,foot\n' >> "${name}_config.yml"
             printf '  profiles:\n' >> "${name}_config.yml"
             printf '    - name: car\n' >> "${name}_config.yml"
             printf '      vehicle: car\n' >> "${name}_config.yml"
-            printf '      custom_model_files: []\n' >> "${name}_config.yml"
             printf '    - name: foot\n' >> "${name}_config.yml"
             printf '      vehicle: foot\n' >> "${name}_config.yml"
-            printf '      custom_model_files: []\n' >> "${name}_config.yml"
             
             # Показываем конфиг для диагностики
             echo "=== Generated config ==="
