@@ -141,20 +141,23 @@ jobs:
             # Вырезаем регион
             osmium extract belarus.osm.pbf -b "$bbox" -o "${name}.osm.pbf" --overwrite
             
-            # Создаём конфигурационный файл
-            cat > "${name}_config.yml" <<EOF
-graphhopper:
-  datareader.file: ${name}.osm.pbf
-  graph.location: ${name}.gh
-  graph.vehicles: car,foot
-  profiles:
-    - name: car
-      vehicle: car
-      custom_model_files: []
-    - name: foot
-      vehicle: foot
-      custom_model_files: []
-EOF
+            # Создаём конфигурационный файл через printf (надёжнее чем heredoc)
+            printf 'graphhopper:\n' > "${name}_config.yml"
+            printf '  datareader.file: %s.osm.pbf\n' "$name" >> "${name}_config.yml"
+            printf '  graph.location: %s.gh\n' "$name" >> "${name}_config.yml"
+            printf '  profiles:\n' >> "${name}_config.yml"
+            printf '    - name: car\n' >> "${name}_config.yml"
+            printf '      vehicle: car\n' >> "${name}_config.yml"
+            printf '      custom_model_files: []\n' >> "${name}_config.yml"
+            printf '    - name: foot\n' >> "${name}_config.yml"
+            printf '      vehicle: foot\n' >> "${name}_config.yml"
+            printf '      custom_model_files: []\n' >> "${name}_config.yml"
+            
+            # Показываем конфиг для диагностики
+            echo "=== Generated config ==="
+            cat "${name}_config.yml"
+            echo "========================"
+            
             # Генерируем граф дорог
             java -jar graphhopper-web.jar import "${name}_config.yml"
             
@@ -169,5 +172,3 @@ EOF
           done
         env:
           GH_TOKEN: ${{ github.token }}
-
-
