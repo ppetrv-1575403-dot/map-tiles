@@ -89,8 +89,7 @@ jobs:
       - name: Install GraphHopper 7.0
         run: |
           # Скачиваем основной файл версии 7.0
-          curl -L -o graphhopper-web.jar \
-            "https://repo1.maven.org/maven2/com/graphhopper/graphhopper-web/7.0/graphhopper-web-7.0.jar"
+          curl -L -o graphhopper-web.jar "https://repo1.maven.org/maven2/com/graphhopper/graphhopper-web/5.0/graphhopper-web-5.0.jar"        
           
           # Проверяем, что файл скачался
           echo "=== Проверка файлов ==="
@@ -103,7 +102,7 @@ jobs:
           if [ "$FILE_SIZE" -lt 1000 ]; then
             echo "File too small, trying alternative URL..."
             curl -L -o graphhopper-web.jar \
-              "https://github.com/graphhopper/graphhopper/releases/download/7.0/graphhopper-web-7.0.jar"
+              "https://github.com/graphhopper/graphhopper/releases/download/5.0/graphhopper-web-5.0.jar"
           fi
           
           java -version
