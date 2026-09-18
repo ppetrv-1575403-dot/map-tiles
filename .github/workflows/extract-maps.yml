@@ -63,7 +63,7 @@ jobs:
       - name: Extract and convert regions
         run: |
           TILEJOIN=/usr/local/bin/tile-join
-          #regions=(
+          regions=(
             "minsk_region|26.30,52.80,29.20,55.00|13"
             "gomel_region|27.50,51.20,32.80,53.10|18"
             "moscow_region|35.10,54.20,40.20,56.90|13"
