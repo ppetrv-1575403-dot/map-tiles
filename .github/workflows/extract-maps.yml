@@ -63,13 +63,15 @@ jobs:
       - name: Extract and convert regions
         run: |
           TILEJOIN=/usr/local/bin/tile-join
-          regions=(
+          #regions=(
             "minsk_region|26.30,52.80,29.20,55.00|13"
-            "gomel_region|27.50,51.20,32.80,53.10|13"
-            "moscow_region|35.10,54.20,40.20,56.90|12"
+            "gomel_region|27.50,51.20,32.80,53.10|18"
+            "moscow_region|35.10,54.20,40.20,56.90|13"
             "leningrad_region|27.70,58.40,35.70,61.40|12"
-            "spb|29.90,59.70,30.60,60.10|15"
+            "spb|29.90,59.70,30.60,60.10|13"
           )
+
+          
           for r in "${regions[@]}"; do
             IFS='|' read -r name bbox zoom <<< "$r"
             echo "::group::Extracting $name"
@@ -88,7 +90,7 @@ jobs:
 
       - name: Install GraphHopper 7.0
         run: |
-          # Скачиваем основной файл версии 7.0
+          # Скачиваем основной файл версии 5.0
           curl -L -o graphhopper-web.jar "https://repo1.maven.org/maven2/com/graphhopper/graphhopper-web/5.0/graphhopper-web-5.0.jar"        
           
           # Проверяем, что файл скачался
@@ -151,7 +153,7 @@ jobs:
             # Вырезаем регион
             osmium extract belarus.osm.pbf -b "$bbox" -o "${name}.osm.pbf" --overwrite
             
-            # Создаём конфигурационный файл для GraphHopper 7.0
+            # Создаём конфигурационный файл для GraphHopper
             printf 'graphhopper:\n' > "${name}_config.yml"
             printf '  datareader.file: %s.osm.pbf\n' "$name" >> "${name}_config.yml"
             printf '  graph.location: %s.gh\n' "$name" >> "${name}_config.yml"
@@ -160,8 +162,10 @@ jobs:
             printf '  profiles:\n' >> "${name}_config.yml"
             printf '    - name: car\n' >> "${name}_config.yml"
             printf '      vehicle: car\n' >> "${name}_config.yml"
+            printf '      weighting: fastest\n' >> "${name}_config.yml"
             printf '    - name: foot\n' >> "${name}_config.yml"
             printf '      vehicle: foot\n' >> "${name}_config.yml"
+            printf '      weighting: fastest\n' >> "${name}_config.yml"       
             
             # Показываем конфиг для диагностики
             echo "=== Generated config ==="
