@@ -1,4 +1,4 @@
-name: Generate regions (Protomaps + GraphHopper)
+name: Generate regions (OpenFreeMap + GraphHopper)
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ permissions:
   contents: write
 
 jobs:
-  # === JOB 1: Карты (extract напрямую из Protomaps CDN) ===
+  # === JOB 1: Карты из OpenFreeMap (extract напрямую из CDN) ===
   generate-maps:
     runs-on: ubuntu-latest
     strategy:
@@ -16,14 +16,19 @@ jobs:
         region:
           - name: minsk_region
             bbox: "26.30,52.80,29.20,55.00"
+            maxzoom: 14
           - name: gomel_region
             bbox: "27.50,51.20,32.80,53.10"
+            maxzoom: 14
           - name: moscow_region
             bbox: "35.10,54.20,40.20,56.90"
+            maxzoom: 14
           - name: leningrad_region
             bbox: "27.70,58.40,35.70,61.40"
+            maxzoom: 14
           - name: spb
             bbox: "29.90,59.70,30.60,60.10"
+            maxzoom: 14
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -68,23 +73,20 @@ jobs:
           tar -xzf pmtiles.tar.gz
           chmod +x pmtiles
 
-      - name: Find latest planet build
+      - name: Find OpenFreeMap planet
         id: find-planet
         run: |
           PLANET_URL=""
-          for i in $(seq 1 14); do
-            DATE=$(date -d "$i days ago" +%Y%m%d)
-            URL="https://build.protomaps.com/${DATE}.pmtiles"
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" -I "$URL")
-            if [ "$STATUS" = "200" ]; then
-              PLANET_URL="$URL"
-              echo "url=$URL" >> $GITHUB_OUTPUT
-              echo "Found: $URL"
-              break
-            fi
-          done
+          URL="https://tiles.openfreemap.org/planet.pmtiles"
+          echo "Checking $URL ..."
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" -I "$URL")
+          if [ "$STATUS" = "200" ]; then
+            PLANET_URL="$URL"
+            echo "url=$URL" >> $GITHUB_OUTPUT
+            echo "✅ Found: $URL"
+          fi
           if [ -z "$PLANET_URL" ]; then
-            echo "No planet build found in last 14 days"
+            echo "❌ OpenFreeMap planet not available"
             exit 1
           fi
 
@@ -93,26 +95,24 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
-      # === КЛЮЧЕВОЙ ШАГ: extract напрямую из URL ===
-      # pmtiles использует HTTP Range Requests — скачивает ТОЛЬКО нужные байты
+      # === КЛЮЧЕВОЙ ШАГ: extract напрямую из URL через Range Requests ===
       - name: Extract region from remote pmtiles
         run: |
           TILEJOIN=/usr/local/bin/tile-join
-          MAXZOOM=15
           PLANET_URL="${{ steps.find-planet.outputs.url }}"
+          MAXZOOM="${{ matrix.region.maxzoom }}"
           
-          echo "=== Extracting ${{ matrix.region.name }} from remote URL ==="
+          echo "=== Extracting ${{ matrix.region.name }} from OpenFreeMap ==="
           echo "Source: $PLANET_URL"
           echo "BBox: ${{ matrix.region.bbox }}"
+          echo "MaxZoom: $MAXZOOM"
           
-          # pmtiles extract из URL — работает через Range Requests
-          # НЕ скачивает весь planet, только нужные тайлы региона
           ./pmtiles extract "$PLANET_URL" "${{ matrix.region.name }}.pmtiles" \
             --bbox="${{ matrix.region.bbox }}" \
             --maxzoom="$MAXZOOM"
           
           echo "=== PMTiles info ==="
-          ./pmtiles show "${{ matrix.region.name }}.pmtiles" | head -15
+          ./pmtiles show "${{ matrix.region.name }}.pmtiles" | head -20
           
           $TILEJOIN -o "${{ matrix.region.name }}.mbtiles" \
             "${{ matrix.region.name }}.pmtiles"
@@ -126,7 +126,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
-  # === JOB 2: Графы GraphHopper ===
+  # === JOB 2: Графы GraphHopper (car + foot) ===
   generate-graphs:
     runs-on: ubuntu-latest
     steps:
@@ -227,3 +227,20 @@ jobs:
           done
         env:
           GH_TOKEN: ${{ github.token }}
+
+  # === JOB 3: Итог ===
+  summary:
+    runs-on: ubuntu-latest
+    needs: [generate-maps, generate-graphs]
+    if: always()
+    steps:
+      - name: Summary
+        run: |
+          echo "=== Сводка ==="
+          echo "Источник: OpenFreeMap (схема OpenMapTiles)"
+          echo "Карты: maxzoom=14, с номерами домов (слой housenumber)"
+          echo "Графы: car (fastest) + foot (shortest)"
+          echo ""
+          echo "После запуска:"
+          echo "  1. Удали старые карты/графы в приложении"
+          echo "  2. Скачай заново нужные регионы"
