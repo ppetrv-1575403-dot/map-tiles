@@ -1,4 +1,4 @@
-name: Extract MBTiles regions and road graphs
+name: Generate regions (Protomaps + GraphHopper)
 
 on:
   workflow_dispatch:
@@ -7,8 +7,23 @@ permissions:
   contents: write
 
 jobs:
-  extract:
+  # === JOB 1: Карты из Protomaps ===
+  generate-maps:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        region:
+          - name: minsk_region
+            bbox: "26.30,52.80,29.20,55.00"
+          - name: gomel_region
+            bbox: "27.50,51.20,32.80,53.10"
+          - name: moscow_region
+            bbox: "35.10,54.20,40.20,56.90"
+          - name: leningrad_region
+            bbox: "27.70,58.40,35.70,61.40"
+          - name: spb
+            bbox: "29.90,59.70,30.60,60.10"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -21,11 +36,10 @@ jobs:
           cd tippecanoe
           make -j$(nproc)
           cd ..
-          # Копируем бинарники (обрати внимание: tile-join, а не tilejoin)
           sudo cp tippecanoe/tippecanoe /usr/local/bin/
           sudo cp tippecanoe/tile-join /usr/local/bin/
           sudo chmod +x /usr/local/bin/tippecanoe /usr/local/bin/tile-join
-          /usr/local/bin/tile-join --version || /usr/local/bin/tile-join --help | head -3
+          tile-join --version
 
       - name: Download pmtiles CLI
         run: |
@@ -41,7 +55,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
-      - name: Find planet build
+      - name: Find latest planet build
         run: |
           PLANET=""
           for i in $(seq 1 14); do
@@ -60,87 +74,87 @@ jobs:
           fi
           echo "PLANET=$PLANET" >> $GITHUB_ENV
 
-      - name: Extract and convert regions
+      - name: Extract region and convert to mbtiles
         run: |
           TILEJOIN=/usr/local/bin/tile-join
-          regions=(
-            "minsk_region|26.30,52.80,29.20,55.00|13"
-            "gomel_region|27.50,51.20,32.80,53.10|18"
-            "moscow_region|35.10,54.20,40.20,56.90|13"
-            "leningrad_region|27.70,58.40,35.70,61.40|12"
-            "spb|29.90,59.70,30.60,60.10|13"
-          )
-
+          MAXZOOM=15  # Protomaps содержит тайлы только до z15
           
-          for r in "${regions[@]}"; do
-            IFS='|' read -r name bbox zoom <<< "$r"
-            echo "::group::Extracting $name"
-            
-            ./pmtiles extract "$PLANET" "${name}.pmtiles" --bbox="$bbox" --maxzoom="$zoom" --download-threads=8
-            
-            $TILEJOIN -o "${name}.mbtiles" "${name}.pmtiles" --no-tile-compression
-            
-            gh release upload maps "${name}.mbtiles" --clobber
-            
-            rm -f "${name}.pmtiles" "${name}.mbtiles"
-            echo "::endgroup::"
-          done
+          echo "=== Extracting ${{ matrix.region.name }} (maxzoom=$MAXZOOM) ==="
+          
+          # Извлекаем регион
+          ./pmtiles extract "$PLANET" "${{ matrix.region.name }}.pmtiles" \
+            --bbox="${{ matrix.region.bbox }}" \
+            --maxzoom="$MAXZOOM" \
+            --download-threads=8
+          
+          echo "=== PMTiles info ==="
+          ./pmtiles show "${{ matrix.region.name }}.pmtiles" | head -20
+          
+          # Конвертируем в mbtiles с gzip-сжатием
+          # Убран --no-tile-compression: теперь тайлы сжимаются gzip (меньше размер)
+          $TILEJOIN -o "${{ matrix.region.name }}.mbtiles" \
+            "${{ matrix.region.name }}.pmtiles"
+          
+          echo "=== MBTiles size ==="
+          ls -lh "${{ matrix.region.name }}.mbtiles"
+          
+          # Загружаем в релиз
+          gh release upload maps "${{ matrix.region.name }}.mbtiles" --clobber
+          
+          # Очистка
+          rm -f "${{ matrix.region.name }}.pmtiles" "${{ matrix.region.name }}.mbtiles"
         env:
           GH_TOKEN: ${{ github.token }}
 
-      - name: Install GraphHopper 7.0
+  # === JOB 2: Графы GraphHopper (car + foot с оптимизацией) ===
+  generate-graphs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Ensure release exists
+        run: gh release view maps >/dev/null 2>&1 || gh release create maps --title "Offline MBTiles" --notes "mbtiles regions"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Install GraphHopper 5.0
         run: |
-          # Скачиваем основной файл версии 5.0
-          curl -L -o graphhopper-web.jar "https://repo1.maven.org/maven2/com/graphhopper/graphhopper-web/5.0/graphhopper-web-5.0.jar"        
-          
-          # Проверяем, что файл скачался
-          echo "=== Проверка файлов ==="
-          ls -la *.jar || echo "No jar files found"
-          ls -la graphhopper-web.jar || echo "graphhopper-web.jar not found"
+          echo "=== Скачиваем GraphHopper 5.0 ==="
+          curl -L -o graphhopper-web.jar \
+            "https://repo1.maven.org/maven2/com/graphhopper/graphhopper-web/5.0/graphhopper-web-5.0.jar"
+          ls -lh graphhopper-web.jar
           
           FILE_SIZE=$(stat -c%s graphhopper-web.jar 2>/dev/null || echo "0")
-          echo "File size: $FILE_SIZE bytes"
-          
-          if [ "$FILE_SIZE" -lt 1000 ]; then
-            echo "File too small, trying alternative URL..."
+          if [ "$FILE_SIZE" -lt 1000000 ]; then
+            echo "File too small, trying alternative..."
             curl -L -o graphhopper-web.jar \
               "https://github.com/graphhopper/graphhopper/releases/download/5.0/graphhopper-web-5.0.jar"
           fi
-          
-          java -version
 
       - name: Install osmium
         run: |
           sudo apt-get update
           sudo apt-get install -y osmium-tool
-          which osmium || echo "osmium not found in PATH"
-          osmium --version || echo "osmium version check failed"
-          ls -la /usr/bin/ | grep -i osmium || echo "not in /usr/bin"
+          osmium --version
 
-      - name: Generate road graphs
+      - name: Download Belarus OSM PBF
         run: |
-          # Проверяем наличие файла
-          if [ ! -f graphhopper-web.jar ]; then
-            echo "ERROR: graphhopper-web.jar not found!"
-            ls -la
-            exit 1
-          fi
-          
-          # Скачиваем данные Беларуси из Geofabrik с таймаутом
-          echo "=== Начинаем скачивание данных Беларуси ==="
+          echo "=== Скачиваем данные Беларуси ==="
           curl -L --connect-timeout 30 --max-time 600 \
             --progress-bar \
             -o belarus.osm.pbf \
             "https://download.geofabrik.de/europe/belarus-latest.osm.pbf"
-          
-          FILE_SIZE=$(stat -c%s belarus.osm.pbf 2>/dev/null || echo "0")
-          echo "=== Скачано: $FILE_SIZE байт ==="
-          
-          if [ "$FILE_SIZE" -lt 1000000 ]; then
-            echo "ERROR: Файл слишком мал или не скачался"
-            exit 1
-          fi
-          
+          ls -lh belarus.osm.pbf
+
+      - name: Generate road graphs (car + foot optimized)
+        run: |
           regions=(
             "gomel_region|27.50,51.20,32.80,53.10"
             "minsk_region|26.30,52.80,29.20,55.00"
@@ -153,30 +167,68 @@ jobs:
             # Вырезаем регион
             osmium extract belarus.osm.pbf -b "$bbox" -o "${name}.osm.pbf" --overwrite
             
-            # Создаём конфигурационный файл для GraphHopper
-            printf 'graphhopper:\n' > "${name}_config.yml"
-            printf '  datareader.file: %s.osm.pbf\n' "$name" >> "${name}_config.yml"
-            printf '  graph.location: %s.gh\n' "$name" >> "${name}_config.yml"
-            printf '  import.osm.ignored_highways: []\n' >> "${name}_config.yml"
-            printf '  graph.vehicles: car,foot\n' >> "${name}_config.yml"
-            printf '  profiles:\n' >> "${name}_config.yml"
-            printf '    - name: car\n' >> "${name}_config.yml"
-            printf '      vehicle: car\n' >> "${name}_config.yml"
-            printf '      weighting: fastest\n' >> "${name}_config.yml"
-            printf '    - name: foot\n' >> "${name}_config.yml"
-            printf '      vehicle: foot\n' >> "${name}_config.yml"
-            printf '      weighting: fastest\n' >> "${name}_config.yml"       
+            # Конфиг GraphHopper 5.0 — оптимизация для пешеходов + авто
+            # Ключевые улучшения:
+            # 1. encoded_values: surface — учитывает тип покрытия (важно для пешеходов)
+            # 2. foot: shortest — кратчайший путь, а не быстрый
+            # 3. foot: turn_costs=false — пешеходы не тратят время на повороты
+            # 4. car: fastest + turn_costs — реалистичный автомобильный маршрут
+            # 5. CH-индексы для ускорения роутинга
+            cat > "${name}_config.yml" <<EOF
+          graphhopper:
+            datareader.file: ${name}.osm.pbf
+            graph.location: ${name}.gh
+            import.osm.ignored_highways: []
+          
+            # Учитываем тип покрытия — критично для пешеходов
+            graph.encoded_values: surface,road_class,road_environment,max_speed
+          
+            profiles:
+              # Авто: по времени, с учётом поворотов
+              - name: car
+                vehicle: car
+                weighting: fastest
+                turn_costs: true
+              
+              # Пешеходы: кратчайший путь, без учёта времени на повороты
+              - name: foot
+                vehicle: foot
+                weighting: shortest
+                turn_costs: false
+          
+            prepare:
+              min_network_size: 200
+              ch:
+                # CH-индексы для ускорения роутинга в 10-100 раз
+                weightings: fastest|turn_costs=true,shortest
+          
+            routing:
+              ch.disabling_allowed: true
+              lm.disabling_allowed: true
+          
+            index:
+              precise_elevation: false
+          EOF
             
-            # Показываем конфиг для диагностики
             echo "=== Generated config ==="
             cat "${name}_config.yml"
             echo "========================"
             
-            # Генерируем граф дорог
-            java -jar graphhopper-web.jar import "${name}_config.yml"
+            # Генерируем граф
+            echo "=== Generating graph (3-10 minutes) ==="
+            java -Xmx4g -jar graphhopper-web.jar import "${name}_config.yml"
+            
+            if [ ! -d "${name}.gh" ]; then
+              echo "ERROR: Graph not created!"
+              exit 1
+            fi
+            
+            echo "=== Graph files ==="
+            ls -lh "${name}.gh"
             
             # Упаковываем в zip
             zip -r "${name}_graph.zip" "${name}.gh"
+            ls -lh "${name}_graph.zip"
             
             # Загружаем в релиз
             gh release upload maps "${name}_graph.zip" --clobber
@@ -186,3 +238,29 @@ jobs:
           done
         env:
           GH_TOKEN: ${{ github.token }}
+
+  # === JOB 3: Итог ===
+  summary:
+    runs-on: ubuntu-latest
+    needs: [generate-maps, generate-graphs]
+    if: always()
+    steps:
+      - name: Summary
+        run: |
+          echo "=== Сводка ==="
+          echo ""
+          echo "Карты (Protomaps → mbtiles):"
+          echo "  - maxzoom: 15"
+          echo "  - Сжатие: gzip"
+          echo "  - Все регионы параллельно"
+          echo ""
+          echo "Графы (GraphHopper 5.0):"
+          echo "  - car: fastest + turn_costs"
+          echo "  - foot: shortest, без поворотов"
+          echo "  - encoded_values: surface, road_class"
+          echo "  - CH-индексы для ускорения"
+          echo ""
+          echo "После запуска:"
+          echo "  1. Удали старые карты/графы в приложении"
+          echo "  2. Скачай заново нужные регионы"
+          echo "  3. Пешеходные маршруты теперь пойдут по кратчайшему пути"
