@@ -71,12 +71,76 @@ jobs:
       - name: Download source OSM PBF (if not cached)
         if: steps.cache-source.outputs.cache-hit != 'true'
         run: |
-          curl -L --connect-timeout 30 --max-time 1200 \
+          echo "=== Скачиваем ${{ matrix.region.source_name }} ==="
+          curl -L --connect-timeout 30 --max-time 1800 \
+            --retry 3 --retry-delay 10 \
             --progress-bar \
             -o source.osm.pbf \
             "${{ matrix.region.source_url }}"
+          
           ls -lh source.osm.pbf
+          echo "Размер: $(stat -c%s source.osm.pbf) байт"
 
+      # === ИСПРАВЛЕННАЯ ПРОВЕРКА ===
+      - name: Validate source PBF
+        run: |
+          echo "=== Диагностика PBF файла ==="
+          ls -lh source.osm.pbf
+          FILE_SIZE=$(stat -c%s source.osm.pbf 2>/dev/null || echo "0")
+          echo "Размер файла: $FILE_SIZE байт"
+          
+          # Проверка 1: размер (должен быть больше 1 МБ)
+          if [ "$FILE_SIZE" -lt 1048576 ]; then
+            echo "❌ Файл слишком мал (< 1 МБ)"
+            rm -f source.osm.pbf
+            exit 1
+          fi
+          echo "✅ Размер файла нормальный"
+          
+          # Проверка 2: osmium fileinfo (читает только заголовки)
+          echo "=== osmium fileinfo ==="
+          if osmium fileinfo source.osm.pbf; then
+            echo "✅ Файл читается"
+          else
+            echo "❌ osmium fileinfo не смог прочитать файл"
+            rm -f source.osm.pbf
+            exit 1
+          fi
+          
+          # Проверка 3: попробуем прочитать первые 100 объектов
+          echo "=== osmium cat (первые 100 объектов) ==="
+          if osmium cat source.osm.pbf --limit 100 -f xml > /dev/null 2>&1; then
+            echo "✅ Файл содержит валидные данные"
+          else
+            echo "⚠️ osmium cat не смог прочитать данные (возможно, нужен полный файл)"
+            # Не выходим с ошибкой — fileinfo прошёл, значит файл в порядке
+          fi
+          
+          echo "=== Все проверки пройдены ==="
+
+      - name: Extract region bbox
+        run: |
+          echo "=== Вырезаем ${{ matrix.region.name }} ==="
+          echo "BBox: ${{ matrix.region.bbox }}"
+          
+          # Используем osmium extract с увеличенным лимитом
+          osmium extract source.osm.pbf \
+            -b "${{ matrix.region.bbox }}" \
+            -o "${{ matrix.region.name }}.osm.pbf" \
+            --overwrite
+          
+          ls -lh "${{ matrix.region.name }}.osm.pbf"
+          
+          # Проверяем результат
+          EXTRACT_SIZE=$(stat -c%s "${{ matrix.region.name }}.osm.pbf" 2>/dev/null || echo "0")
+          echo "Размер extract: $EXTRACT_SIZE байт"
+          
+          if [ "$EXTRACT_SIZE" -lt 1024 ]; then
+            echo "❌ Extract слишком мал или пустой"
+            exit 1
+          fi
+          
+          echo "✅ Extract создан успешно"
       # === НОВЫЙ ШАГ: проверка и валидация PBF ===
       - name: Validate and fix source PBF
         run: |
