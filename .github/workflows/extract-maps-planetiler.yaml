@@ -1,3 +1,12 @@
+name: Generate regions with Planetiler (OpenMapTiles)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
   generate-maps:
     runs-on: ubuntu-latest
     strategy:
@@ -50,12 +59,6 @@
             "https://github.com/onthegomap/planetiler/releases/latest/download/planetiler.jar"
           ls -lh planetiler.jar
 
-      - name: Install osmium
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y osmium-tool
-          osmium --version
-
       - name: Cache source OSM PBF
         id: cache-source
         uses: actions/cache@v4
@@ -74,17 +77,19 @@
             "${{ matrix.region.source_url }}"
           ls -lh source.osm.pbf
 
-      # === ПРОВЕРКА И ИСПРАВЛЕНИЕ PBF ===
+      # === НОВЫЙ ШАГ: проверка и валидация PBF ===
       - name: Validate and fix source PBF
         run: |
           echo "=== Проверяем валидность PBF файла ==="
           ls -lh source.osm.pbf
           
+          # Функция проверки валидности PBF
           validate_pbf() {
             osmium check-refs source.osm.pbf > /dev/null 2>&1
             return $?
           }
           
+          # Первая попытка проверки
           if validate_pbf; then
             echo "✅ PBF валиден"
             exit 0
@@ -93,6 +98,7 @@
           echo "⚠️ PBF повреждён, перескачиваем..."
           rm -f source.osm.pbf
           
+          # Retry логика (до 3 попыток)
           for attempt in 1 2 3; do
             echo "=== Попытка $attempt/3 ==="
             curl -L --connect-timeout 30 --max-time 1200 \
@@ -115,15 +121,22 @@
           echo "❌ Не удалось скачать валидный PBF после 3 попыток"
           exit 1
 
+      - name: Install osmium
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y osmium-tool
+          osmium --version
+
       - name: Extract region bbox
         run: |
           echo "=== Вырезаем ${{ matrix.region.name }} ==="
+          echo "BBox: ${{ matrix.region.bbox }}"
           osmium extract source.osm.pbf \
             -b "${{ matrix.region.bbox }}" \
             -o "${{ matrix.region.name }}.osm.pbf" \
             --overwrite
-          ls -lh "${{ matrix.region.name }}.osm.pbf"
-
+          ls -lh "${{ matrix.region.name }}.osm.pbf
+      
       - name: Generate pmtiles with Planetiler (OpenMapTiles profile)
         run: |
           echo "=== Генерируем pmtiles (OpenMapTiles, maxzoom=${{ matrix.region.maxzoom }}) ==="
@@ -144,6 +157,7 @@
             exit 1
           fi
 
+      # === ИЗМЕНЕНО: загружаем pmtiles напрямую (без конвертации) ===
       - name: Upload pmtiles to release
         run: |
           gh release upload maps "${{ matrix.region.name }}.pmtiles" --clobber
@@ -155,3 +169,122 @@
         run: |
           rm -f "${{ matrix.region.name }}.osm.pbf" \
                 "${{ matrix.region.name }}.pmtiles"
+
+  generate-graphs:
+    runs-on: ubuntu-latest
+    needs: []
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Ensure release exists
+        run: gh release view maps >/dev/null 2>&1 || gh release create maps --title "Offline Maps (PMTiles)" --notes "pmtiles regions"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Cache GraphHopper jar
+        id: cache-gh
+        uses: actions/cache@v4
+        with:
+          path: graphhopper-web.jar
+          key: graphhopper-5.0-v1
+
+      - name: Download GraphHopper (if not cached)
+        if: steps.cache-gh.outputs.cache-hit != 'true'
+        run: |
+          curl -L -o graphhopper-web.jar \
+            "https://repo1.maven.org/maven2/com/graphhopper/graphhopper-web/5.0/graphhopper-web-5.0.jar"
+          ls -lh graphhopper-web.jar
+
+      - name: Install osmium
+        run: sudo apt-get install -y osmium-tool
+
+      - name: Cache Belarus PBF
+        id: cache-belarus
+        uses: actions/cache@v4
+        with:
+          path: belarus.osm.pbf
+          key: belarus-pbf-v1
+          restore-keys: |
+            belarus-pbf-
+
+      - name: Download Belarus PBF (if not cached)
+        if: steps.cache-belarus.outputs.cache-hit != 'true'
+        run: |
+          curl -L --connect-timeout 30 --max-time 600 \
+            -o belarus.osm.pbf \
+            "https://download.geofabrik.de/europe/belarus-latest.osm.pbf"
+          ls -lh belarus.osm.pbf
+
+      - name: Generate road graphs (car + foot)
+        run: |
+          regions=(
+            "gomel_region|27.50,51.20,32.80,53.10"
+            "minsk_region|26.30,52.80,29.20,55.00"
+          )
+          
+          for r in "${regions[@]}"; do
+            IFS='|' read -r name bbox <<< "$r"
+            echo "::group::Generating graph for $name"
+            
+            osmium extract belarus.osm.pbf -b "$bbox" -o "${name}.osm.pbf" --overwrite
+            
+            cat > "${name}_config.yml" <<EOF
+          graphhopper:
+            datareader.file: ${name}.osm.pbf
+            graph.location: ${name}.gh
+            import.osm.ignored_highways: []
+            graph.encoded_values: surface,road_class,road_environment,max_speed
+            profiles:
+              - name: car
+                vehicle: car
+                weighting: fastest
+                turn_costs: true
+              - name: foot
+                vehicle: foot
+                weighting: shortest
+                turn_costs: false
+            prepare:
+              min_network_size: 200
+              ch:
+                weightings: fastest|turn_costs=true,shortest
+            routing:
+              ch.disabling_allowed: true
+              lm.disabling_allowed: true
+            index:
+              precise_elevation: false
+          EOF
+            
+            java -Xmx4g -jar graphhopper-web.jar import "${name}_config.yml"
+            
+            zip -r "${name}_graph.zip" "${name}.gh"
+            gh release upload maps "${name}_graph.zip" --clobber
+            
+            rm -rf "${name}.gh" "${name}_graph.zip" "${name}.osm.pbf" "${name}_config.yml"
+            echo "::endgroup::"
+          done
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  summary:
+    runs-on: ubuntu-latest
+    needs: [generate-maps, generate-graphs]
+    if: always()
+    steps:
+      - name: Summary
+        run: |
+          echo "=== Сводка ==="
+          echo "Planetiler + OpenMapTiles → PMTiles"
+          echo ""
+          echo "Тайлы (pmtiles) содержат:"
+          echo "  ✅ Номера домов (слой housenumber)"
+          echo "  ✅ Названия зданий"
+          echo "  ✅ Тропинки (path, footway, pedestrian)"
+          echo "  ✅ POI"
+          echo "  ✅ Парки, леса, водоёмы"
