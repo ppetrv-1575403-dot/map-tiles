@@ -71,18 +71,20 @@ jobs:
       - name: Find latest planet build
         id: find-planet
         run: |
+          PLANET_URL=""
           for i in $(seq 1 14); do
             DATE=$(date -d "$i days ago" +%Y%m%d)
             URL="https://build.protomaps.com/${DATE}.pmtiles"
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" -I "$URL")
             if [ "$STATUS" = "200" ]; then
+              PLANET_URL="$URL"
               echo "url=$URL" >> $GITHUB_OUTPUT
               echo "Found: $URL"
               break
             fi
           done
-          if [ -z "${{ steps.find-planet.outputs.url }}" ]; then
-            echo "No planet build found"
+          if [ -z "$PLANET_URL" ]; then
+            echo "No planet build found in last 14 days"
             exit 1
           fi
 
