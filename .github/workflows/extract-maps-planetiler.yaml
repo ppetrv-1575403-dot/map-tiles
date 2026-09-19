@@ -152,15 +152,15 @@ jobs:
           
           echo "✅ Extract создан успешно"
 
-      # === Генерация pmtiles с OpenMapTiles профилем ===
-      - name: Generate pmtiles with Planetiler (OpenMapTiles profile)
+      # === Генерация MBTiles напрямую через Planetiler (без pmtiles) ===
+      - name: Generate mbtiles with Planetiler (OpenMapTiles profile)
         run: |
-          echo "=== Генерируем pmtiles (OpenMapTiles, maxzoom=${{ matrix.region.maxzoom }}) ==="
+          echo "=== Генерируем mbtiles (OpenMapTiles, maxzoom=${{ matrix.region.maxzoom }}) ==="
           
-          # --download — скачивает вспомогательные файлы (Natural Earth, lake_centerline)
           java -Xmx6g -jar planetiler.jar \
             --osm-path="${{ matrix.region.name }}.osm.pbf" \
-            --output="${{ matrix.region.name }}.pmtiles" \
+            --output="${{ matrix.region.name }}.mbtiles" \
+            --output-fmt=mbtiles \
             --bounds="${{ matrix.region.bbox }}" \
             --profile=openmaptiles \
             --maxzoom=${{ matrix.region.maxzoom }} \
@@ -168,25 +168,25 @@ jobs:
             --download \
             --storage=ram
           
-          ls -lh "${{ matrix.region.name }}.pmtiles"
+          ls -lh "${{ matrix.region.name }}.mbtiles"
           
-          if [ ! -s "${{ matrix.region.name }}.pmtiles" ]; then
-            echo "ERROR: pmtiles файл пустой или не создан"
+          if [ ! -s "${{ matrix.region.name }}.mbtiles" ]; then
+            echo "ERROR: mbtiles файл пустой или не создан"
             exit 1
           fi
 
-      # === Загрузка pmtiles напрямую в релиз (без конвертации в mbtiles) ===
-      - name: Upload pmtiles to release
+      # === Загрузка mbtiles напрямую в релиз ===
+      - name: Upload mbtiles to release
         run: |
-          gh release upload maps "${{ matrix.region.name }}.pmtiles" --clobber
-          echo "✅ Загружен: ${{ matrix.region.name }}.pmtiles"
+          gh release upload maps "${{ matrix.region.name }}.mbtiles" --clobber
+          echo "✅ Загружен: ${{ matrix.region.name }}.mbtiles"
         env:
           GH_TOKEN: ${{ github.token }}
 
       - name: Cleanup
         run: |
           rm -f "${{ matrix.region.name }}.osm.pbf" \
-                "${{ matrix.region.name }}.pmtiles"
+                "${{ matrix.region.name }}.mbtiles"
 
   # === JOB 2: Графы GraphHopper (car + foot) ===
   generate-graphs:
@@ -290,28 +290,41 @@ jobs:
           done
         env:
           GH_TOKEN: ${{ github.token }}
-
-  # === JOB 3: Итог ===
-  summary:
-    runs-on: ubuntu-latest
-    needs: [generate-maps, generate-graphs]
-    if: always()
-    steps:
-      - name: Summary
+          
+      # === Генерация MBTiles напрямую через Planetiler (без pmtiles) ===
+      - name: Generate mbtiles with Planetiler (OpenMapTiles profile)
         run: |
-          echo "=== Сводка ==="
-          echo "Planetiler + OpenMapTiles → PMTiles"
-          echo ""
-          echo "Тайлы (pmtiles) содержат:"
-          echo "  ✅ Номера домов (слой housenumber)"
-          echo "  ✅ Названия зданий"
-          echo "  ✅ Тропинки (path, footway, pedestrian, track)"
-          echo "  ✅ POI (магазины, кафе, остановки)"
-          echo "  ✅ Парки, леса, водоёмы"
-          echo ""
-          echo "Графы: car (fastest) + foot (shortest)"
-          echo ""
-          echo "После запуска:"
-          echo "  1. Удали старые карты/графы в приложении"
-          echo "  2. Скачай заново нужные регионы"
-          echo "  3. Открой карту на зуме 16+ — появятся номера домов"
+          echo "=== Генерируем mbtiles (OpenMapTiles, maxzoom=${{ matrix.region.maxzoom }}) ==="
+          
+          java -Xmx6g -jar planetiler.jar \
+            --osm-path="${{ matrix.region.name }}.osm.pbf" \
+            --output="${{ matrix.region.name }}.mbtiles" \
+            --output-fmt=mbtiles \
+            --bounds="${{ matrix.region.bbox }}" \
+            --profile=openmaptiles \
+            --maxzoom=${{ matrix.region.maxzoom }} \
+            --force \
+            --download \
+            --storage=ram
+          
+          ls -lh "${{ matrix.region.name }}.mbtiles"
+          
+          if [ ! -s "${{ matrix.region.name }}.mbtiles" ]; then
+            echo "ERROR: mbtiles файл пустой или не создан"
+            exit 1
+          fi
+
+      # === Загрузка mbtiles напрямую в релиз ===
+      - name: Upload mbtiles to release
+        run: |
+          gh release upload maps "${{ matrix.region.name }}.mbtiles" --clobber
+          echo "✅ Загружен: ${{ matrix.region.name }}.mbtiles"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Cleanup
+        run: |
+          rm -f "${{ matrix.region.name }}.osm.pbf" \
+                "${{ matrix.region.name }}.mbtiles"
+
+          
