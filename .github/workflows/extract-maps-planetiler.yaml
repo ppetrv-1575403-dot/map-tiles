@@ -49,18 +49,15 @@ jobs:
           distribution: 'temurin'
 
       - name: Ensure release exists
-        run: gh release view maps >/dev/null 2>&1 || gh release create maps --title "Offline MBTiles" --notes "mbtiles regions"
+        run: gh release view maps >/dev/null 2>&1 || gh release create maps --title "Offline Maps (PMTiles)" --notes "pmtiles regions"
         env:
           GH_TOKEN: ${{ github.token }}
 
       - name: Download Planetiler
         run: |
-          echo "=== Скачиваем последнюю версию Planetiler ==="
           curl -L -o planetiler.jar \
             "https://github.com/onthegomap/planetiler/releases/latest/download/planetiler.jar"
           ls -lh planetiler.jar
-          java -version
-          java -jar planetiler.jar --version 2>&1 | head -5 || true
 
       - name: Cache source OSM PBF
         id: cache-source
@@ -74,20 +71,11 @@ jobs:
       - name: Download source OSM PBF (if not cached)
         if: steps.cache-source.outputs.cache-hit != 'true'
         run: |
-          echo "=== Скачиваем ${{ matrix.region.source_name }} PBF ==="
           curl -L --connect-timeout 30 --max-time 1200 \
             --progress-bar \
             -o source.osm.pbf \
             "${{ matrix.region.source_url }}"
           ls -lh source.osm.pbf
-          
-          FILE_SIZE=$(stat -c%s source.osm.pbf 2>/dev/null || echo "0")
-          echo "=== Скачано: $FILE_SIZE байт ==="
-          
-          if [ "$FILE_SIZE" -lt 1000000 ]; then
-            echo "ERROR: Файл слишком мал или не скачался"
-            exit 1
-          fi
 
       - name: Install osmium
         run: |
@@ -97,20 +85,15 @@ jobs:
 
       - name: Extract region bbox
         run: |
-          echo "=== Вырезаем ${{ matrix.region.name }} ==="
-          echo "BBox: ${{ matrix.region.bbox }}"
           osmium extract source.osm.pbf \
             -b "${{ matrix.region.bbox }}" \
             -o "${{ matrix.region.name }}.osm.pbf" \
             --overwrite
           ls -lh "${{ matrix.region.name }}.osm.pbf"
 
-      # === ИСПРАВЛЕННЫЙ ШАГ: добавлен --download ===
       - name: Generate pmtiles with Planetiler (OpenMapTiles profile)
         run: |
           echo "=== Генерируем pmtiles (OpenMapTiles, maxzoom=${{ matrix.region.maxzoom }}) ==="
-          
-          # --download — скачивает Natural Earth, lake_centerline и другие вспомогательные файлы
           java -Xmx6g -jar planetiler.jar \
             --osm-path="${{ matrix.region.name }}.osm.pbf" \
             --output="${{ matrix.region.name }}.pmtiles" \
@@ -128,37 +111,18 @@ jobs:
             exit 1
           fi
 
-      - name: Download pmtiles CLI
+      # === ИЗМЕНЕНО: загружаем pmtiles напрямую (без конвертации) ===
+      - name: Upload pmtiles to release
         run: |
-          ASSET_URL=$(curl -s https://api.github.com/repos/protomaps/go-pmtiles/releases/latest \
-            | grep "browser_download_url" | grep "Linux_x86_64.tar.gz" \
-            | head -1 | sed 's/.*"browser_download_url": "\(.*\)".*/\1/')
-          echo "Downloading: $ASSET_URL"
-          curl -L -o pmtiles.tar.gz "$ASSET_URL"
-          tar -xzf pmtiles.tar.gz
-          chmod +x pmtiles
-
-      - name: Convert pmtiles to mbtiles
-        run: |
-          echo "=== Конвертируем pmtiles → mbtiles ==="
-          ./pmtiles convert "${{ matrix.region.name }}.pmtiles" "${{ matrix.region.name }}.mbtiles"
-          ls -lh "${{ matrix.region.name }}.mbtiles"
-          
-          echo "=== Информация о mbtiles ==="
-          ./pmtiles show "${{ matrix.region.name }}.mbtiles" | head -20 || true
-
-      - name: Upload to release
-        run: |
-          gh release upload maps "${{ matrix.region.name }}.mbtiles" --clobber
-          echo "✅ Загружен: ${{ matrix.region.name }}.mbtiles"
+          gh release upload maps "${{ matrix.region.name }}.pmtiles" --clobber
+          echo "✅ Загружен: ${{ matrix.region.name }}.pmtiles"
         env:
           GH_TOKEN: ${{ github.token }}
 
       - name: Cleanup
         run: |
           rm -f "${{ matrix.region.name }}.osm.pbf" \
-                "${{ matrix.region.name }}.pmtiles" \
-                "${{ matrix.region.name }}.mbtiles"
+                "${{ matrix.region.name }}.pmtiles"
 
   generate-graphs:
     runs-on: ubuntu-latest
@@ -174,7 +138,7 @@ jobs:
           distribution: 'temurin'
 
       - name: Ensure release exists
-        run: gh release view maps >/dev/null 2>&1 || gh release create maps --title "Offline MBTiles" --notes "mbtiles regions"
+        run: gh release view maps >/dev/null 2>&1 || gh release create maps --title "Offline Maps (PMTiles)" --notes "pmtiles regions"
         env:
           GH_TOKEN: ${{ github.token }}
 
@@ -270,13 +234,11 @@ jobs:
       - name: Summary
         run: |
           echo "=== Сводка ==="
-          echo "Planetiler + OpenMapTiles профиль"
+          echo "Planetiler + OpenMapTiles → PMTiles"
           echo ""
-          echo "Тайлы содержат:"
+          echo "Тайлы (pmtiles) содержат:"
           echo "  ✅ Номера домов (слой housenumber)"
           echo "  ✅ Названия зданий"
-          echo "  ✅ Тропинки (path, footway, pedestrian, track)"
-          echo "  ✅ POI (магазины, кафе, остановки)"
+          echo "  ✅ Тропинки (path, footway, pedestrian)"
+          echo "  ✅ POI"
           echo "  ✅ Парки, леса, водоёмы"
-          echo ""
-          echo "Графы: car (fastest) + foot (shortest)"
