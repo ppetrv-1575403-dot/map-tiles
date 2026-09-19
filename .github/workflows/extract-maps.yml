@@ -7,54 +7,9 @@ permissions:
   contents: write
 
 jobs:
-  # === JOB 0: Скачиваем planet.pmtiles ОДИН раз ===
-  download-planet:
-    runs-on: ubuntu-latest
-    outputs:
-      planet_date: ${{ steps.find.outputs.date }}
-    steps:
-      - name: Find latest planet build
-        id: find
-        run: |
-          for i in $(seq 1 14); do
-            DATE=$(date -d "$i days ago" +%Y%m%d)
-            URL="https://build.protomaps.com/${DATE}.pmtiles"
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" -I "$URL")
-            if [ "$STATUS" = "200" ]; then
-              echo "date=$DATE" >> $GITHUB_OUTPUT
-              echo "url=$URL" >> $GITHUB_OUTPUT
-              echo "Found: $URL"
-              break
-            fi
-          done
-
-      - name: Cache planet pmtiles
-        id: cache-planet
-        uses: actions/cache@v4
-        with:
-          path: planet.pmtiles
-          key: planet-${{ steps.find.outputs.date }}
-
-      - name: Download planet (if not cached)
-        if: steps.cache-planet.outputs.cache-hit != 'true'
-        run: |
-          echo "=== Скачиваем planet.pmtiles ==="
-          curl -L --progress-bar \
-            -o planet.pmtiles \
-            "https://build.protomaps.com/${{ steps.find.outputs.date }}.pmtiles"
-          ls -lh planet.pmtiles
-
-      - name: Upload planet artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: planet-pmtiles
-          path: planet.pmtiles
-          retention-days: 1
-
-  # === JOB 1: Карты из Protomaps (matrix) ===
+  # === JOB 1: Карты (extract напрямую из Protomaps CDN) ===
   generate-maps:
     runs-on: ubuntu-latest
-    needs: download-planet
     strategy:
       fail-fast: false
       matrix:
@@ -113,29 +68,48 @@ jobs:
           tar -xzf pmtiles.tar.gz
           chmod +x pmtiles
 
-      - name: Download planet artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: planet-pmtiles
-          path: .
+      - name: Find latest planet build
+        id: find-planet
+        run: |
+          for i in $(seq 1 14); do
+            DATE=$(date -d "$i days ago" +%Y%m%d)
+            URL="https://build.protomaps.com/${DATE}.pmtiles"
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" -I "$URL")
+            if [ "$STATUS" = "200" ]; then
+              echo "url=$URL" >> $GITHUB_OUTPUT
+              echo "Found: $URL"
+              break
+            fi
+          done
+          if [ -z "${{ steps.find-planet.outputs.url }}" ]; then
+            echo "No planet build found"
+            exit 1
+          fi
 
       - name: Ensure release exists
         run: gh release view maps >/dev/null 2>&1 || gh release create maps --title "Offline MBTiles" --notes "mbtiles regions"
         env:
           GH_TOKEN: ${{ github.token }}
 
-      - name: Extract region and convert to mbtiles
+      # === КЛЮЧЕВОЙ ШАГ: extract напрямую из URL ===
+      # pmtiles использует HTTP Range Requests — скачивает ТОЛЬКО нужные байты
+      - name: Extract region from remote pmtiles
         run: |
           TILEJOIN=/usr/local/bin/tile-join
           MAXZOOM=15
+          PLANET_URL="${{ steps.find-planet.outputs.url }}"
           
-          echo "=== Extracting ${{ matrix.region.name }} (maxzoom=$MAXZOOM) ==="
-          echo "Planet size: $(ls -lh planet.pmtiles | awk '{print $5}')"
+          echo "=== Extracting ${{ matrix.region.name }} from remote URL ==="
+          echo "Source: $PLANET_URL"
+          echo "BBox: ${{ matrix.region.bbox }}"
           
-          ./pmtiles extract planet.pmtiles "${{ matrix.region.name }}.pmtiles" \
+          # pmtiles extract из URL — работает через Range Requests
+          # НЕ скачивает весь planet, только нужные тайлы региона
+          ./pmtiles extract "$PLANET_URL" "${{ matrix.region.name }}.pmtiles" \
             --bbox="${{ matrix.region.bbox }}" \
             --maxzoom="$MAXZOOM"
           
+          echo "=== PMTiles info ==="
           ./pmtiles show "${{ matrix.region.name }}.pmtiles" | head -15
           
           $TILEJOIN -o "${{ matrix.region.name }}.mbtiles" \
@@ -163,7 +137,6 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      # === Кэш GraphHopper jar ===
       - name: Cache GraphHopper jar
         id: cache-gh
         uses: actions/cache@v4
@@ -186,13 +159,12 @@ jobs:
       - name: Install osmium
         run: sudo apt-get install -y osmium-tool
 
-      # === Кэш Belarus PBF ===
       - name: Cache Belarus PBF
         id: cache-belarus
         uses: actions/cache@v4
         with:
           path: belarus.osm.pbf
-          key: belarus-pbf-${{ hashFiles('**/belarus-latest.osm.pbf') }}-v1
+          key: belarus-pbf-v1
           restore-keys: |
             belarus-pbf-
 
@@ -200,12 +172,11 @@ jobs:
         if: steps.cache-belarus.outputs.cache-hit != 'true'
         run: |
           curl -L --connect-timeout 30 --max-time 600 \
-            --progress-bar \
             -o belarus.osm.pbf \
             "https://download.geofabrik.de/europe/belarus-latest.osm.pbf"
           ls -lh belarus.osm.pbf
 
-      - name: Generate road graphs (car + foot optimized)
+      - name: Generate road graphs (car + foot)
         run: |
           regions=(
             "gomel_region|27.50,51.20,32.80,53.10"
@@ -254,16 +225,3 @@ jobs:
           done
         env:
           GH_TOKEN: ${{ github.token }}
-
-  # === JOB 3: Итог ===
-  summary:
-    runs-on: ubuntu-latest
-    needs: [download-planet, generate-maps, generate-graphs]
-    if: always()
-    steps:
-      - name: Summary
-        run: |
-          echo "=== Сводка ==="
-          echo "Planet: ${{ needs.download-planet.outputs.planet_date }}"
-          echo "Карты: maxzoom=15, gzip"
-          echo "Графы: car (fastest) + foot (shortest)"
