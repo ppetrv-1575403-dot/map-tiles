@@ -258,8 +258,7 @@ jobs:
           graphhopper:
             datareader.file: ${name}.osm.pbf
             graph.location: ${name}.gh
-            import.osm.ignored_highways: []
-            graph.encoded_values: surface,road_class,road_environment,max_speed
+            graph.encoded_values: surface,road_class,road_environment,max_speed,road_access,hike_rating,bike_access,bike_priority
             profiles:
               - name: car
                 vehicle: car
@@ -272,7 +271,8 @@ jobs:
             prepare:
               min_network_size: 200
               ch:
-                weightings: fastest|turn_costs=true,shortest
+                - profile: car
+                - profile: foot
             routing:
               ch.disabling_allowed: true
               lm.disabling_allowed: true
@@ -290,41 +290,3 @@ jobs:
           done
         env:
           GH_TOKEN: ${{ github.token }}
-          
-      # === Генерация MBTiles напрямую через Planetiler (без pmtiles) ===
-      - name: Generate mbtiles with Planetiler (OpenMapTiles profile)
-        run: |
-          echo "=== Генерируем mbtiles (OpenMapTiles, maxzoom=${{ matrix.region.maxzoom }}) ==="
-          
-          java -Xmx6g -jar planetiler.jar \
-            --osm-path="${{ matrix.region.name }}.osm.pbf" \
-            --output="${{ matrix.region.name }}.mbtiles" \
-            --output-fmt=mbtiles \
-            --bounds="${{ matrix.region.bbox }}" \
-            --profile=openmaptiles \
-            --maxzoom=${{ matrix.region.maxzoom }} \
-            --force \
-            --download \
-            --storage=ram
-          
-          ls -lh "${{ matrix.region.name }}.mbtiles"
-          
-          if [ ! -s "${{ matrix.region.name }}.mbtiles" ]; then
-            echo "ERROR: mbtiles файл пустой или не создан"
-            exit 1
-          fi
-
-      # === Загрузка mbtiles напрямую в релиз ===
-      - name: Upload mbtiles to release
-        run: |
-          gh release upload maps "${{ matrix.region.name }}.mbtiles" --clobber
-          echo "✅ Загружен: ${{ matrix.region.name }}.mbtiles"
-        env:
-          GH_TOKEN: ${{ github.token }}
-
-      - name: Cleanup
-        run: |
-          rm -f "${{ matrix.region.name }}.osm.pbf" \
-                "${{ matrix.region.name }}.mbtiles"
-
-          
