@@ -43,7 +43,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Java 21 — требуется для последнего Planetiler
       - name: Set up Java 21
         uses: actions/setup-java@v4
         with:
@@ -70,30 +69,97 @@ jobs:
           sudo apt-get install -y osmium-tool
           osmium --version
 
-      # === Кэш OSM PBF (отдельный для каждого источника) ===
+      # === Кэш OSM PBF (версия v3 для сброса битых файлов) ===
       - name: Cache source OSM PBF
         id: cache-source
         uses: actions/cache@v4
         with:
           path: source.osm.pbf
-          key: osm-pbf-${{ matrix.region.source_name }}-v2
+          key: osm-pbf-${{ matrix.region.source_name }}-v3
           restore-keys: |
             osm-pbf-${{ matrix.region.source_name }}-
 
-      - name: Download source OSM PBF (if not cached)
-        if: steps.cache-source.outputs.cache-hit != 'true'
+      - name: Validate cached PBF size
+        id: validate-cache
+        run: |
+          if [ -f source.osm.pbf ]; then
+            FILE_SIZE=$(stat -c%s source.osm.pbf 2>/dev/null || echo "0")
+            echo "Cached file size: $FILE_SIZE bytes"
+            if [ "$FILE_SIZE" -lt 1048576 ]; then
+              echo "❌ Cached file too small (< 1MB), deleting"
+              rm -f source.osm.pbf
+              echo "cache_valid=false" >> $GITHUB_OUTPUT
+            else
+              echo "✅ Cache is valid"
+              echo "cache_valid=true" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "cache_valid=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Download source OSM PBF (with retry)
+        if: steps.validate-cache.outputs.cache_valid != 'true'
         run: |
           echo "=== Скачиваем ${{ matrix.region.source_name }} ==="
-          curl -L --connect-timeout 30 --max-time 1800 \
-            --retry 3 --retry-delay 10 \
-            --progress-bar \
-            -o source.osm.pbf \
-            "${{ matrix.region.source_url }}"
+          echo "URL: ${{ matrix.region.source_url }}"
           
-          ls -lh source.osm.pbf
-          echo "Размер: $(stat -c%s source.osm.pbf) байт"
+          MAX_ATTEMPTS=3
+          ATTEMPT=0
+          SUCCESS=false
+          
+          while [ $ATTEMPT -lt $MAX_ATTEMPTS ] && [ "$SUCCESS" != "true" ]; do
+            ATTEMPT=$((ATTEMPT + 1))
+            echo "=== Attempt $ATTEMPT of $MAX_ATTEMPTS ==="
+            
+            rm -f source.osm.pbf
+            
+            HTTP_CODE=$(curl -L \
+              --connect-timeout 60 \
+              --max-time 3600 \
+              --retry 3 \
+              --retry-delay 30 \
+              --retry-all-errors \
+              --progress-bar \
+              -o source.osm.pbf \
+              -w "%{http_code}" \
+              "${{ matrix.region.source_url }}")
+            
+            echo "HTTP status: $HTTP_CODE"
+            
+            if [ "$HTTP_CODE" != "200" ]; then
+              echo "❌ HTTP $HTTP_CODE, retrying..."
+              rm -f source.osm.pbf
+              sleep 30
+              continue
+            fi
+            
+            if [ ! -f source.osm.pbf ]; then
+              echo "❌ File not created"
+              sleep 30
+              continue
+            fi
+            
+            FILE_SIZE=$(stat -c%s source.osm.pbf 2>/dev/null || echo "0")
+            echo "Размер: $FILE_SIZE байт"
+            
+            if [ "$FILE_SIZE" -lt 1048576 ]; then
+              echo "❌ File too small ($FILE_SIZE bytes < 1MB), probably HTML error page"
+              echo "=== First 500 chars of file ==="
+              head -c 500 source.osm.pbf
+              rm -f source.osm.pbf
+              sleep 30
+              continue
+            fi
+            
+            SUCCESS=true
+            echo "✅ Download successful: $FILE_SIZE bytes"
+          done
+          
+          if [ "$SUCCESS" != "true" ]; then
+            echo "❌ Failed to download after $MAX_ATTEMPTS attempts"
+            exit 1
+          fi
 
-      # === Валидация через osmium fileinfo (быстрее и надёжнее чем check-refs) ===
       - name: Validate source PBF
         run: |
           echo "=== Диагностика PBF файла ==="
@@ -101,7 +167,6 @@ jobs:
           FILE_SIZE=$(stat -c%s source.osm.pbf 2>/dev/null || echo "0")
           echo "Размер файла: $FILE_SIZE байт"
           
-          # Проверка 1: размер (должен быть больше 1 МБ)
           if [ "$FILE_SIZE" -lt 1048576 ]; then
             echo "❌ Файл слишком мал (< 1 МБ)"
             rm -f source.osm.pbf
@@ -109,27 +174,17 @@ jobs:
           fi
           echo "✅ Размер файла нормальный"
           
-          # Проверка 2: осмиум читает заголовки
           echo "=== osmium fileinfo ==="
           if osmium fileinfo source.osm.pbf; then
-            echo "✅ Файл читается"
+            echo "✅ Файл читается osmium"
           else
             echo "❌ osmium fileinfo не смог прочитать файл"
             rm -f source.osm.pbf
             exit 1
           fi
           
-          # Проверка 3: читаем первые 100 объектов (опционально)
-          echo "=== osmium cat (первые 100 объектов) ==="
-          if osmium cat source.osm.pbf --limit 100 -f xml > /dev/null 2>&1; then
-            echo "✅ Файл содержит валидные данные"
-          else
-            echo "⚠️ osmium cat не смог прочитать данные (возможно, нужен полный файл)"
-          fi
-          
           echo "=== Все проверки пройдены ==="
 
-      # === Вырезка региона из полного PBF ===
       - name: Extract region bbox
         run: |
           echo "=== Вырезаем ${{ matrix.region.name }} ==="
@@ -152,7 +207,6 @@ jobs:
           
           echo "✅ Extract создан успешно"
 
-      # === Генерация MBTiles напрямую через Planetiler (без pmtiles) ===
       - name: Generate mbtiles with Planetiler (OpenMapTiles profile)
         run: |
           echo "=== Генерируем mbtiles (OpenMapTiles, maxzoom=${{ matrix.region.maxzoom }}) ==="
@@ -175,7 +229,6 @@ jobs:
             exit 1
           fi
 
-      # === Загрузка mbtiles напрямую в релиз ===
       - name: Upload mbtiles to release
         run: |
           gh release upload maps "${{ matrix.region.name }}.mbtiles" --clobber
@@ -229,16 +282,71 @@ jobs:
         uses: actions/cache@v4
         with:
           path: belarus.osm.pbf
-          key: belarus-pbf-v1
+          key: belarus-pbf-v2
           restore-keys: |
             belarus-pbf-
 
-      - name: Download Belarus PBF (if not cached)
+      - name: Download Belarus PBF (with retry)
         if: steps.cache-belarus.outputs.cache-hit != 'true'
         run: |
-          curl -L --connect-timeout 30 --max-time 600 \
-            -o belarus.osm.pbf \
-            "https://download.geofabrik.de/europe/belarus-latest.osm.pbf"
+          echo "=== Скачиваем Belarus PBF ==="
+          
+          MAX_ATTEMPTS=3
+          ATTEMPT=0
+          SUCCESS=false
+          
+          while [ $ATTEMPT -lt $MAX_ATTEMPTS ] && [ "$SUCCESS" != "true" ]; do
+            ATTEMPT=$((ATTEMPT + 1))
+            echo "=== Attempt $ATTEMPT of $MAX_ATTEMPTS ==="
+            
+            rm -f belarus.osm.pbf
+            
+            HTTP_CODE=$(curl -L \
+              --connect-timeout 60 \
+              --max-time 1800 \
+              --retry 3 \
+              --retry-delay 30 \
+              --retry-all-errors \
+              --progress-bar \
+              -o belarus.osm.pbf \
+              -w "%{http_code}" \
+              "https://download.geofabrik.de/europe/belarus-latest.osm.pbf")
+            
+            echo "HTTP status: $HTTP_CODE"
+            
+            if [ "$HTTP_CODE" != "200" ]; then
+              echo "❌ HTTP $HTTP_CODE, retrying..."
+              rm -f belarus.osm.pbf
+              sleep 30
+              continue
+            fi
+            
+            if [ ! -f belarus.osm.pbf ]; then
+              echo "❌ File not created"
+              sleep 30
+              continue
+            fi
+            
+            FILE_SIZE=$(stat -c%s belarus.osm.pbf 2>/dev/null || echo "0")
+            echo "Размер: $FILE_SIZE байт"
+            
+            if [ "$FILE_SIZE" -lt 1048576 ]; then
+              echo "❌ File too small, probably HTML error page"
+              head -c 500 belarus.osm.pbf
+              rm -f belarus.osm.pbf
+              sleep 30
+              continue
+            fi
+            
+            SUCCESS=true
+            echo "✅ Download successful: $FILE_SIZE bytes"
+          done
+          
+          if [ "$SUCCESS" != "true" ]; then
+            echo "❌ Failed to download after $MAX_ATTEMPTS attempts"
+            exit 1
+          fi
+          
           ls -lh belarus.osm.pbf
 
       - name: Generate road graphs (car + foot)
@@ -258,7 +366,7 @@ jobs:
           graphhopper:
             datareader.file: ${name}.osm.pbf
             graph.location: ${name}.gh
-            graph.encoded_values: surface,road_class,road_environment,max_speed,road_access,hike_rating,bike_access,bike_priority
+            graph.encoded_values: surface,road_class,road_environment,max_speed
             profiles:
               - name: car
                 vehicle: car
