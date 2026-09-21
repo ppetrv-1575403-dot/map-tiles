@@ -41,7 +41,7 @@ jobs:
           echo "=== Matrix will be: ==="
           echo "$MATRIX_JSON" | jq .
 
-  # === JOB 1: Генерация тайлов через Planetiler (матрица из prepare-maps) ===
+  # === JOB 1: Генерация тайлов через Planetiler ===
   generate-maps:
     needs: prepare-maps
     runs-on: ubuntu-latest
@@ -67,7 +67,7 @@ jobs:
       # === Скачивание Planetiler с надёжной проверкой ===
       - name: Download Planetiler
         run: |
-          echo "=== Скачиваем последнюю версию Planetiler ==="
+          echo "=== Скачиваем Planetiler ==="
           
           MAX_ATTEMPTS=3
           ATTEMPT=0
@@ -79,7 +79,6 @@ jobs:
             
             rm -f planetiler.jar
             
-            # Используем latest релиз (GitHub редирект на актуальную версию)
             HTTP_CODE=$(curl -L \
               --connect-timeout 60 \
               --max-time 600 \
@@ -107,43 +106,106 @@ jobs:
             FILE_SIZE=$(stat -c%s planetiler.jar 2>/dev/null || echo "0")
             echo "Размер planetiler.jar: $FILE_SIZE байт"
             
-            # Planetiler.jar обычно 50-80 МБ. Если меньше 10 МБ — скорее всего ошибка
             if [ "$FILE_SIZE" -lt 10485760 ]; then
-              echo "❌ Файл слишком мал (< 10 МБ), вероятно HTML ошибка"
-              echo "=== Первые 500 байт файла ==="
+              echo "❌ Файл слишком мал (< 10 МБ)"
               head -c 500 planetiler.jar
               rm -f planetiler.jar
               sleep 15
               continue
             fi
             
-            # Проверяем, что это реальный JAR (содержит META-INF/MANIFEST.MF)
             if ! unzip -t planetiler.jar > /dev/null 2>&1; then
-              echo "❌ Файл не является валидным ZIP/JAR"
+              echo "❌ Файл не является валидным JAR"
               rm -f planetiler.jar
               sleep 15
               continue
             fi
             
             SUCCESS=true
-            echo "✅ Planetiler скачан успешно: $FILE_SIZE байт"
+            echo "✅ Planetiler скачан: $FILE_SIZE байт"
           done
           
           if [ "$SUCCESS" != "true" ]; then
-            echo "❌ Failed to download Planetiler after $MAX_ATTEMPTS attempts"
+            echo "❌ Failed to download Planetiler"
             exit 1
           fi
           
-          echo "=== Проверка версии ==="
           ls -lh planetiler.jar
           java -version
-          java -jar planetiler.jar --version 2>&1 | head -10 || echo "⚠️ --version не сработал, но файл валидный"
-     
+          java -jar planetiler.jar --version 2>&1 | head -10 || echo "⚠️ --version не сработал"
+
       - name: Install osmium
         run: |
           sudo apt-get update
           sudo apt-get install -y osmium-tool
           osmium --version
+
+      # === Скачиваем вспомогательные файлы для OpenMapTiles с retry ===
+      - name: Download auxiliary data files
+        run: |
+          echo "=== Скачиваем вспомогательные файлы для OpenMapTiles ==="
+          mkdir -p data/sources
+          
+          download_with_retry() {
+            local url="$1"
+            local output="$2"
+            local max_attempts=3
+            local attempt=0
+            local success=false
+            
+            while [ $attempt -lt $max_attempts ] && [ "$success" != "true" ]; do
+              attempt=$((attempt + 1))
+              echo "=== Attempt $attempt/$max_attempts: $url ==="
+              
+              HTTP_CODE=$(curl -L \
+                --connect-timeout 60 \
+                --max-time 600 \
+                --retry 3 \
+                --retry-delay 30 \
+                -o "$output" \
+                -w "%{http_code}" \
+                "$url")
+              
+              echo "HTTP status: $HTTP_CODE"
+              
+              if [ "$HTTP_CODE" = "200" ]; then
+                FILE_SIZE=$(stat -c%s "$output" 2>/dev/null || echo "0")
+                if [ "$FILE_SIZE" -gt 1024 ]; then
+                  echo "✅ Downloaded: $FILE_SIZE bytes"
+                  success=true
+                else
+                  echo "❌ File too small"
+                  rm -f "$output"
+                  sleep 30
+                fi
+              else
+                echo "❌ HTTP $HTTP_CODE"
+                rm -f "$output"
+                sleep 30
+              fi
+            done
+            
+            if [ "$success" != "true" ]; then
+              echo "❌ Failed to download $url"
+              exit 1
+            fi
+          }
+          
+          # Скачиваем все нужные файлы для OpenMapTiles
+          download_with_retry \
+            "https://naciscdn.org/naturalearth/packages/natural_earth_vector.sqlite.zip" \
+            "data/sources/natural_earth_vector.sqlite.zip"
+          
+          download_with_retry \
+            "https://osmdata.openstreetmap.de/download/water-polygons-split-3857.zip" \
+            "data/sources/water-polygons-split-3857.zip"
+          
+          download_with_retry \
+            "https://osmdata.openstreetmap.de/download/land-polygons-split-3857.zip" \
+            "data/sources/land-polygons-split-3857.zip"
+          
+          echo "=== Все файлы скачаны ==="
+          ls -lh data/sources/
 
       - name: Cache source OSM PBF
         id: cache-source
@@ -252,7 +314,7 @@ jobs:
           if osmium fileinfo source.osm.pbf; then
             echo "✅ Файл читается osmium"
           else
-            echo "❌ osmium fileinfo не смог прочитать файл"
+            echo "❌ osmium fileinfo failed"
             rm -f source.osm.pbf
             exit 1
           fi
@@ -273,15 +335,15 @@ jobs:
           echo "Размер extract: $EXTRACT_SIZE байт"
           
           if [ "$EXTRACT_SIZE" -lt 1024 ]; then
-            echo "❌ Extract слишком мал или пустой"
+            echo "❌ Extract пустой"
             exit 1
           fi
-          
-          echo "✅ Extract создан успешно"
+          echo "✅ Extract создан"
 
+      # === Генерация mbtiles БЕЗ --download (файлы уже скачаны) ===
       - name: Generate mbtiles with Planetiler
         run: |
-          echo "=== Генерируем mbtiles (OpenMapTiles, maxzoom=${{ matrix.region.maxzoom }}, storage=${{ matrix.region.storage }}) ==="
+          echo "=== Генерируем mbtiles (maxzoom=${{ matrix.region.maxzoom }}, storage=${{ matrix.region.storage }}) ==="
           
           java -Xmx6g -jar planetiler.jar \
             --osm-path="${{ matrix.region.name }}.osm.pbf" \
@@ -290,19 +352,18 @@ jobs:
             --profile=openmaptiles \
             --maxzoom=${{ matrix.region.maxzoom }} \
             --force \
-            --download \
             --storage=${{ matrix.region.storage }} \
             --threads=2
           
           ls -lh "${{ matrix.region.name }}.mbtiles"
           
           if [ ! -s "${{ matrix.region.name }}.mbtiles" ]; then
-            echo "ERROR: mbtiles файл пустой или не создан"
+            echo "ERROR: mbtiles не создан"
             exit 1
           fi
           
           if ! sqlite3 "${{ matrix.region.name }}.mbtiles" "SELECT COUNT(*) FROM sqlite_master LIMIT 1;" > /dev/null 2>&1; then
-            echo "❌ MBTiles не является валидным SQLite файлом"
+            echo "❌ MBTiles не валиден"
             exit 1
           fi
           echo "✅ MBTiles валиден"
@@ -317,9 +378,10 @@ jobs:
       - name: Cleanup
         run: |
           rm -f "${{ matrix.region.name }}.osm.pbf" \
-                "${{ matrix.region.name }}.mbtiles"
+                "${{ matrix.region.name }}.mbtiles" \
+                source.osm.pbf
 
-  # === JOB 2: Генерация графов GraphHopper (матрица из prepare-graphs) ===
+  # === JOB 2: Генерация графов GraphHopper ===
   generate-graphs:
     needs: prepare-graphs
     runs-on: ubuntu-latest
@@ -432,7 +494,8 @@ jobs:
             echo "Размер: $FILE_SIZE байт"
             
             if [ "$FILE_SIZE" -lt 1048576 ]; then
-              echo "❌ File too small"
+              echo "❌ File too small (вероятно HTML страница)"
+              echo "=== Первые 500 байт ==="
               head -c 500 source.osm.pbf
               rm -f source.osm.pbf
               sleep 30
@@ -466,7 +529,7 @@ jobs:
           if osmium fileinfo source.osm.pbf; then
             echo "✅ Файл читается osmium"
           else
-            echo "❌ osmium fileinfo не смог прочитать файл"
+            echo "❌ osmium fileinfo failed"
             rm -f source.osm.pbf
             exit 1
           fi
@@ -483,7 +546,7 @@ jobs:
           
           EXTRACT_SIZE=$(stat -c%s "${{ matrix.graph.name }}.osm.pbf" 2>/dev/null || echo "0")
           if [ "$EXTRACT_SIZE" -lt 1024 ]; then
-            echo "❌ Extract слишком мал или пустой"
+            echo "❌ Extract пустой"
             exit 1
           fi
           
