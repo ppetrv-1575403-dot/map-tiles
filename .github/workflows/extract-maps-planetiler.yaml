@@ -197,14 +197,15 @@ jobs:
             "https://osmdata.openstreetmap.de/download/land-polygons-split-3857.zip" \
             "data/sources/land-polygons-split-3857.zip"
           
-          # Линии центров озёр (для подписей)
+          # === ИСПРАВЛЕННЫЙ URL: lake centerline теперь на GitHub ===
+          # Источник: https://github.com/acalcutt/osm-lakelines
           download_with_retry \
-            "https://osmdata.openstreetmap.de/download/lake_centerline.shp.zip" \
+            "https://github.com/acalcutt/osm-lakelines/releases/download/latest/lake_centerline.shp.zip" \
             "data/sources/lake_centerline.shp.zip"
           
           echo "=== Все файлы скачаны ==="
           ls -lh data/sources/
-
+          
       - name: Cache source OSM PBF
         id: cache-source
         uses: actions/cache@v4
