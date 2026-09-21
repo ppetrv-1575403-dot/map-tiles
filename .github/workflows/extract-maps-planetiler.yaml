@@ -21,8 +21,6 @@ jobs:
         run: |
           MATRIX_JSON=$(cat regions.json | jq -c .)
           echo "matrix=$MATRIX_JSON" >> $GITHUB_OUTPUT
-          echo "=== Matrix will be: ==="
-          echo "$MATRIX_JSON" | jq .
 
   # === JOB 0B: Читаем список регионов для графов ===
   prepare-graphs:
@@ -38,8 +36,6 @@ jobs:
         run: |
           MATRIX_JSON=$(cat graphs.json | jq -c .)
           echo "matrix=$MATRIX_JSON" >> $GITHUB_OUTPUT
-          echo "=== Matrix will be: ==="
-          echo "$MATRIX_JSON" | jq .
 
   # === JOB 1: Генерация тайлов через Planetiler ===
   generate-maps:
@@ -64,7 +60,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
-      # === Скачивание Planetiler с надёжной проверкой ===
       - name: Download Planetiler
         run: |
           echo "=== Скачиваем Planetiler ==="
@@ -131,8 +126,6 @@ jobs:
           fi
           
           ls -lh planetiler.jar
-          java -version
-          java -jar planetiler.jar --version 2>&1 | head -10 || echo "⚠️ --version не сработал"
 
       - name: Install osmium
         run: |
@@ -140,7 +133,7 @@ jobs:
           sudo apt-get install -y osmium-tool
           osmium --version
 
-      # === Скачиваем вспомогательные файлы для OpenMapTiles с retry ===
+      # === Скачиваем все 4 вспомогательных файла для OpenMapTiles ===
       - name: Download auxiliary data files
         run: |
           echo "=== Скачиваем вспомогательные файлы для OpenMapTiles ==="
@@ -191,7 +184,7 @@ jobs:
             fi
           }
           
-          # Скачиваем все нужные файлы для OpenMapTiles
+          # Скачиваем все 4 нужных файла для OpenMapTiles
           download_with_retry \
             "https://naciscdn.org/naturalearth/packages/natural_earth_vector.sqlite.zip" \
             "data/sources/natural_earth_vector.sqlite.zip"
@@ -203,6 +196,11 @@ jobs:
           download_with_retry \
             "https://osmdata.openstreetmap.de/download/land-polygons-split-3857.zip" \
             "data/sources/land-polygons-split-3857.zip"
+          
+          # Линии центров озёр (для подписей)
+          download_with_retry \
+            "https://osmdata.openstreetmap.de/download/lake_centerline.shp.zip" \
+            "data/sources/lake_centerline.shp.zip"
           
           echo "=== Все файлы скачаны ==="
           ls -lh data/sources/
@@ -310,7 +308,6 @@ jobs:
           fi
           echo "✅ Размер файла нормальный"
           
-          echo "=== osmium fileinfo ==="
           if osmium fileinfo source.osm.pbf; then
             echo "✅ Файл читается osmium"
           else
@@ -340,7 +337,7 @@ jobs:
           fi
           echo "✅ Extract создан"
 
-      # === Генерация mbtiles БЕЗ --download (файлы уже скачаны) ===
+      # === Генерация mbtiles БЕЗ --download (все файлы уже в data/sources/) ===
       - name: Generate mbtiles with Planetiler
         run: |
           echo "=== Генерируем mbtiles (maxzoom=${{ matrix.region.maxzoom }}, storage=${{ matrix.region.storage }}) ==="
@@ -525,7 +522,6 @@ jobs:
           fi
           echo "✅ Размер файла нормальный"
           
-          echo "=== osmium fileinfo ==="
           if osmium fileinfo source.osm.pbf; then
             echo "✅ Файл читается osmium"
           else
