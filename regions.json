@@ -1,0 +1,44 @@
+{
+  "regions": [
+    {
+      "name": "minsk_region",
+      "bbox": "26.30,52.80,29.20,55.00",
+      "source_url": "https://download.geofabrik.de/europe/belarus-latest.osm.pbf",
+      "source_name": "belarus",
+      "maxzoom": 15,
+      "storage": "ram"
+    },
+    {
+      "name": "gomel_region",
+      "bbox": "27.50,51.20,32.80,53.10",
+      "source_url": "https://download.geofabrik.de/europe/belarus-latest.osm.pbf",
+      "source_name": "belarus",
+      "maxzoom": 15,
+      "storage": "ram"
+    },
+    {
+      "name": "moscow_region",
+      "bbox": "35.10,54.20,40.20,56.90",
+      "source_url": "https://download.geofabrik.de/europe/russia/moskovskaya-oblast-latest.osm.pbf",
+      "source_name": "moskovskaya-oblast",
+      "maxzoom": 15,
+      "storage": "ram"
+    },
+    {
+      "name": "leningrad_region",
+      "bbox": "27.70,58.40,35.70,61.40",
+      "source_url": "https://download.geofabrik.de/europe/russia/leningradskaya-oblast-latest.osm.pbf",
+      "source_name": "leningradskaya-oblast",
+      "maxzoom": 15,
+      "storage": "ram"
+    },
+    {
+      "name": "spb",
+      "bbox": "29.90,59.70,30.60,60.10",
+      "source_url": "https://download.geofabrik.de/europe/russia/sankt-peterburg-latest.osm.pbf",
+      "source_name": "sankt-peterburg",
+      "maxzoom": 15,
+      "storage": "ram"
+    }
+  ]
+}
