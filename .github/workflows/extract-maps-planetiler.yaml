@@ -64,15 +64,81 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
-      - name: Download Planetiler (pinned version)
+      # === Скачивание Planetiler с надёжной проверкой ===
+      - name: Download Planetiler
         run: |
-          PLANETILER_VERSION="0.8.4"
-          echo "=== Скачиваем Planetiler $PLANETILER_VERSION ==="
-          curl -L -o planetiler.jar \
-            "https://github.com/onthegomap/planetiler/releases/download/$PLANETILER_VERSION/planetiler.jar"
+          echo "=== Скачиваем последнюю версию Planetiler ==="
+          
+          MAX_ATTEMPTS=3
+          ATTEMPT=0
+          SUCCESS=false
+          
+          while [ $ATTEMPT -lt $MAX_ATTEMPTS ] && [ "$SUCCESS" != "true" ]; do
+            ATTEMPT=$((ATTEMPT + 1))
+            echo "=== Attempt $ATTEMPT of $MAX_ATTEMPTS ==="
+            
+            rm -f planetiler.jar
+            
+            # Используем latest релиз (GitHub редирект на актуальную версию)
+            HTTP_CODE=$(curl -L \
+              --connect-timeout 60 \
+              --max-time 600 \
+              --retry 3 \
+              --retry-delay 10 \
+              -o planetiler.jar \
+              -w "%{http_code}" \
+              "https://github.com/onthegomap/planetiler/releases/latest/download/planetiler.jar")
+            
+            echo "HTTP status: $HTTP_CODE"
+            
+            if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "302" ] && [ "$HTTP_CODE" != "301" ]; then
+              echo "❌ HTTP $HTTP_CODE, retrying..."
+              rm -f planetiler.jar
+              sleep 15
+              continue
+            fi
+            
+            if [ ! -f planetiler.jar ]; then
+              echo "❌ File not created"
+              sleep 15
+              continue
+            fi
+            
+            FILE_SIZE=$(stat -c%s planetiler.jar 2>/dev/null || echo "0")
+            echo "Размер planetiler.jar: $FILE_SIZE байт"
+            
+            # Planetiler.jar обычно 50-80 МБ. Если меньше 10 МБ — скорее всего ошибка
+            if [ "$FILE_SIZE" -lt 10485760 ]; then
+              echo "❌ Файл слишком мал (< 10 МБ), вероятно HTML ошибка"
+              echo "=== Первые 500 байт файла ==="
+              head -c 500 planetiler.jar
+              rm -f planetiler.jar
+              sleep 15
+              continue
+            fi
+            
+            # Проверяем, что это реальный JAR (содержит META-INF/MANIFEST.MF)
+            if ! unzip -t planetiler.jar > /dev/null 2>&1; then
+              echo "❌ Файл не является валидным ZIP/JAR"
+              rm -f planetiler.jar
+              sleep 15
+              continue
+            fi
+            
+            SUCCESS=true
+            echo "✅ Planetiler скачан успешно: $FILE_SIZE байт"
+          done
+          
+          if [ "$SUCCESS" != "true" ]; then
+            echo "❌ Failed to download Planetiler after $MAX_ATTEMPTS attempts"
+            exit 1
+          fi
+          
+          echo "=== Проверка версии ==="
           ls -lh planetiler.jar
           java -version
-
+          java -jar planetiler.jar --version 2>&1 | head -10 || echo "⚠️ --version не сработал, но файл валидный"
+     
       - name: Install osmium
         run: |
           sudo apt-get update
